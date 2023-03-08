@@ -22,6 +22,8 @@ type OrgType int64
 
 type maluba = diff.Diff
 
+var verbosity = 0
+
 const (
 	HeadlineType OrgType = iota
 	TextType
@@ -45,7 +47,18 @@ var typeNames = map[OrgType]string{
 	KeywordType:  "keyword",
 	TableType:    "table",
 }
+
 var regexs map[string]*regexp.Regexp
+
+func SetVerbosity(level int) {
+	verbosity = level
+}
+
+func verbose(level int, format string, args ...any) {
+	if level >= verbosity {
+		fmt.Printf(format, args...)
+	}
+}
 
 func re(name, value string) *regexp.Regexp {
 	exp, err := regexp.Compile(value)
@@ -839,7 +852,7 @@ func (chunks *OrgChunks) RelinkHierarchy(changes *ChunkChanges) {
 	chunk := Chunk(nil)
 	for !t.IsEmpty() {
 		chunk, t = chunks.relinkChunk(t, 0, changes)
-		fmt.Printf("Clearing parent of %s\n", chunk.AsOrgChunk().Id)
+		verbose(1, "Clearing parent of %s\n", chunk.AsOrgChunk().Id)
 		chunks.clearParent(chunk.AsOrgChunk().Id, changes)
 	}
 }
@@ -852,7 +865,7 @@ func (chunks *OrgChunks) relinkChunk(tree orgTree, level int, changes *ChunkChan
 			if hl2, ok := child.(*Headline); ok && hl2.Level <= hl.Level {
 				break
 			}
-			fmt.Printf("Relinking parent of %s to %s\n", child.AsOrgChunk().Id, hl.AsOrgChunk().Id)
+			verbose(1, "Relinking parent of %s to %s\n", child.AsOrgChunk().Id, hl.AsOrgChunk().Id)
 			if chunks.Parent[child.AsOrgChunk().Id] != hl.Id {
 				chunks.clearParent(child.AsOrgChunk().Id, changes)
 				chunks.link(child.AsOrgChunk().Id, "parent", hl.Id, changes)
@@ -978,19 +991,19 @@ func getText(t orgTree) string {
 // returns changed blocks
 func (chunks *OrgChunks) Replace(offset, len int, text string) *ChunkChanges {
 	left, mid, right, newChunks := chunks.initialReplacement(offset, len, text)
-	fmt.Printf("TRIMMING CHUNKS\n")
-	fmt.Printf("  OLD:\n")
-	displayChunks("    ", mid)
-	fmt.Printf("  NEW:\n")
-	displayChunks("    ", newChunks)
+	verbose(1, "TRIMMING CHUNKS\n")
+	verbose(1, "  OLD:\n")
+	DisplayChunks("    ", mid)
+	verbose(1, "  NEW:\n")
+	DisplayChunks("    ", newChunks)
 	left, mid, right, newChunks = trimUnchangedChunks(left, mid, right, newChunks)
 	changes := chunks.computeRemovesAndNewBlockIds(mid, newChunks)
-	fmt.Printf("  TRIMMED OLD:\n")
-	displayChunks("    ", mid)
-	fmt.Printf("  TRIMMED NEW:\n")
-	displayChunks("    ", newChunks)
-	fmt.Printf("NEW-CHUNKS: %+v\n", newChunks)
-	fmt.Printf("CHANGES: %+v\n", changes)
+	verbose(1, "  TRIMMED OLD:\n")
+	DisplayChunks("    ", mid)
+	verbose(1, "  TRIMMED NEW:\n")
+	DisplayChunks("    ", newChunks)
+	verbose(1, "NEW-CHUNKS: %+v\n", newChunks)
+	verbose(1, "CHANGES: %+v\n", changes)
 	newChunks.Each(func(chunk Chunk) bool {
 		chunks.ChunkIds[chunk.AsOrgChunk().Id] = chunk
 		return true
@@ -1070,27 +1083,53 @@ func (chunks *OrgChunks) computeRemovesAndNewBlockIds(old, new orgTree) *ChunkCh
 	return changes
 }
 
+func escnl(str string) string {
+	return strings.ReplaceAll(str, "\n", "\\n")
+}
+
+func treeText(tr orgTree) string {
+	sb := strings.Builder{}
+	for _, chunk := range tr.ToSlice() {
+		fmt.Fprint(&sb, chunk.text())
+	}
+	return escnl(sb.String())
+}
+
 func (chunks *OrgChunks) initialReplacement(offset, len int, text string) (orgTree, orgTree, orgTree, orgTree) {
 	// offset will lie within the first chunk of mid
 	left, rest := chunks.Chunks.Split(func(m OrgMeasure) bool {
 		return m.Width >= offset
 	})
-	offset -= left.Measure().Width
+	adjLen := len + offset - left.Measure().Width
 	// mid will contain almost all of the affected nodes
 	// right will contain the last affected node
 	mid, right := rest.Split(func(m OrgMeasure) bool {
-		return m.Width >= len
+		return m.Width >= adjLen
 	})
-	nodes := []string{}
+	//DIAG
+	str := treeText(chunks.Chunks)
+	verbose(1, "@ REPLACE %d %d <%s>\n", offset, len, escnl(text))
+	verbose(1, "@ left <%s>\n", escnl(str[:offset]))
+	verbose(1, "@ mid <%s>\n", escnl(str[offset:offset+len]))
+	verbose(1, "@ right <%s>\n", escnl(str[offset+len:]))
+	verbose(1, "\n@ left chunks <%s>\n", treeText(left))
+	verbose(1, "@ mid chunks <%s>\n", treeText(mid.AddLast(right.PeekFirst())))
+	verbose(1, "@ right chunks <%s>\n", treeText(right.RemoveFirst()))
+	for _, chunk := range mid.AddLast(right.PeekFirst()).ToSlice() {
+		verbose(1, "%s\n", escnl(fmt.Sprintf("mid: %+v", chunk)))
+	}
+	diagsb := strings.Builder{}
 	mid.AddLast(right.PeekFirst()).Each(func(chunk Chunk) bool {
-		nodes = append(nodes, string(chunk.AsOrgChunk().Id))
+		fmt.Fprintf(&diagsb, " %s", string(chunk.AsOrgChunk().Id))
 		return true
 	})
-	fmt.Printf("Affecting nodes: %s\n", strings.Join(nodes, " "))
+	verbose(1, "@ AFFECTING NODES:%s\n", diagsb.String())
+	//END DIAG
 	for i := 0; i < 2 && !right.IsEmpty(); i++ {
 		mid = mid.AddLast(right.PeekFirst())
 		right = right.RemoveFirst()
 	}
+	offset -= left.Measure().Width
 	if !left.IsEmpty() {
 		last := left.PeekLast()
 		left = left.RemoveLast()
@@ -1106,12 +1145,14 @@ func (chunks *OrgChunks) initialReplacement(offset, len int, text string) (orgTr
 	return left, mid, right, Parse(sb.String()).Chunks
 }
 
-func displayChunks(prefix string, chunks orgTree) {
-	chunks.Each(func(chunk Chunk) bool {
-		fmt.Printf("%s%s: <%s>\n", prefix, chunk.AsOrgChunk().Id,
-			strings.ReplaceAll(chunk.text(), "\n", "\n"+prefix))
-		return true
-	})
+func DisplayChunks(prefix string, chunks orgTree) {
+	if verbosity > 0 {
+		chunks.Each(func(chunk Chunk) bool {
+			verbose(1, "%s%s: <%s>\n", prefix, chunk.AsOrgChunk().Id,
+				strings.ReplaceAll(chunk.text(), "\n", "\\n"))
+			return true
+		})
+	}
 }
 
 func trimUnchangedChunks(left, mid, right, new orgTree) (orgTree, orgTree, orgTree, orgTree) {
