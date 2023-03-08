@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -60,7 +61,7 @@ type OrgStorage interface {
 	RemoveBlock(name string)
 }
 
-var headlineRE = re(`headline`, `(?m)^(\*+) *(\S.*)?$`)
+var headlineRE = re(`headline`, `(?m)^(\*+) +(\S.*)?$`)
 var keywordRE = re(`keyword`, `(?m)^#\+([^: \n]+): *(.*)$`)
 var drawerRE = re(`drawer`, `(?m)^:([^: \n]+): *$`)
 var drawerEndRE = re(`drawer-end`, `(?im)^:end: *$`)
@@ -82,6 +83,7 @@ type OrgMeasure struct {
 	Count int
 	Width int
 	Names doc.Set[string]
+	Ids   doc.Set[OrgId]
 }
 
 func measure(ch Chunk) OrgMeasure {
@@ -103,6 +105,7 @@ func (m orgMeasurer) Measure(blk Chunk) OrgMeasure {
 		Count: 1,
 		Width: len(blk.AsOrgChunk().Text),
 		Names: names,
+		Ids:   doc.NewSet(blk.AsOrgChunk().Id),
 	}
 }
 
@@ -111,6 +114,7 @@ func (m orgMeasurer) Sum(a OrgMeasure, b OrgMeasure) OrgMeasure {
 		Count: a.Count + b.Count,
 		Width: a.Width + b.Width,
 		Names: a.Names.Union(b.Names),
+		Ids:   a.Ids.Union(b.Ids),
 	}
 }
 
@@ -445,6 +449,26 @@ func eatLine(doc string) (string, string) {
 	return line, rest
 }
 
+func (chunks *OrgChunks) indexOf(ch Chunk) int {
+	left, right := chunks.Chunks.Split(func(m OrgMeasure) bool {
+		return m.Ids.Has(ch.AsOrgChunk().Id)
+	})
+	if right.IsEmpty() {
+		return -1
+	}
+	return left.Measure().Count
+}
+
+func (chunks *OrgChunks) Sort(chunkList []Chunk) {
+	positions := make(map[Chunk]int, len(chunkList))
+	for _, chunk := range chunkList {
+		positions[chunk] = chunks.indexOf(chunk)
+	}
+	sort.Slice(chunkList, func(i, j int) bool {
+		return positions[chunkList[i]] < positions[chunkList[j]]
+	})
+}
+
 func (chunks *OrgChunks) MarshalJSON() ([]byte, error) {
 	out := make([]Chunk, 0, chunks.Chunks.Measure().Count)
 	chunks.Chunks.Each(func(ch Chunk) bool {
@@ -512,20 +536,23 @@ func (chunks *OrgChunks) clear(chunk Chunk, changes *ChunkChanges) {
 }
 
 func (chunks *OrgChunks) clearParent(id OrgId, changes *ChunkChanges) {
-	if chunks.Parent[id] != "" {
-		children := chunks.Children[chunks.Parent[id]]
-		changes.addLink(chunks.Parent[id], "children")
+	parent := chunks.Parent[id]
+	if parent != "" {
+		children := chunks.Children[parent]
+		changes.addLink(parent, "children")
 		if len(children) == 1 {
-			chunks.Children[chunks.Parent[id]] = nil
-		} else {
+			chunks.Children[parent] = nil
+		} else if len(children) > 1 {
 			newChildren := make([]OrgId, 0, len(children)-1)
 			for _, child := range children {
 				if child != id {
 					newChildren = append(newChildren, child)
 				}
 			}
-			chunks.Children[chunks.Parent[id]] = newChildren
+			chunks.Children[parent] = newChildren
 		}
+		chunks.Parent[id] = ""
+		changes.addLink(id, "parent")
 	}
 }
 
@@ -809,8 +836,11 @@ func (chunks *OrgChunks) parseChunk(line, rest string) string {
 
 func (chunks *OrgChunks) RelinkHierarchy(changes *ChunkChanges) {
 	t := chunks.Chunks
+	chunk := Chunk(nil)
 	for !t.IsEmpty() {
-		_, t = chunks.relinkChunk(t, 0, changes)
+		chunk, t = chunks.relinkChunk(t, 0, changes)
+		fmt.Printf("Clearing parent of %s\n", chunk.AsOrgChunk().Id)
+		chunks.clearParent(chunk.AsOrgChunk().Id, changes)
 	}
 }
 
@@ -822,6 +852,7 @@ func (chunks *OrgChunks) relinkChunk(tree orgTree, level int, changes *ChunkChan
 			if hl2, ok := child.(*Headline); ok && hl2.Level <= hl.Level {
 				break
 			}
+			fmt.Printf("Relinking parent of %s to %s\n", child.AsOrgChunk().Id, hl.AsOrgChunk().Id)
 			if chunks.Parent[child.AsOrgChunk().Id] != hl.Id {
 				chunks.clearParent(child.AsOrgChunk().Id, changes)
 				chunks.link(child.AsOrgChunk().Id, "parent", hl.Id, changes)
@@ -836,12 +867,20 @@ func (chunks *OrgChunks) relinkChunk(tree orgTree, level int, changes *ChunkChan
 func (chunks *OrgChunks) link(id OrgId, name string, value OrgId, changes *ChunkChanges) {
 	switch name {
 	case "next":
+		if chunks.Next[id] == value {
+			return
+		}
 		chunks.Next[id] = value
 		chunks.Prev[value] = id
 	case "parent":
+		if chunks.Parent[id] == value {
+			return
+		}
 		chunks.Parent[id] = value
 		if chunks.Children[value] == nil {
 			chunks.Children[value] = append(make([]OrgId, 0, 4), id)
+		} else {
+			chunks.Children[value] = append(chunks.Children[value], id)
 		}
 	}
 	if changes != nil {
@@ -859,6 +898,28 @@ type ChunkChanges struct {
 	Added   idSet
 	Removed []OrgId
 	Linked  map[OrgId]doc.Set[string]
+}
+
+func (ch *ChunkChanges) Order(chunks *OrgChunks) []OrgId {
+	ids := make(idSet, len(ch.Changed)+len(ch.Added)+len(ch.Removed)+len(ch.Linked))
+	ids.Merge(ch.Changed)
+	ids.Merge(ch.Added)
+	for _, id := range ch.Removed {
+		ids.Add(id)
+	}
+	for id := range ch.Linked {
+		ids.Add(id)
+	}
+	chunkList := make([]Chunk, 0, len(ids))
+	for id := range ids {
+		chunkList = append(chunkList, chunks.ChunkIds[id])
+	}
+	chunks.Sort(chunkList)
+	result := make([]OrgId, 0, len(chunkList))
+	for _, chunk := range chunkList {
+		result = append(result, chunk.AsOrgChunk().Id)
+	}
+	return result
 }
 
 func (ch *ChunkChanges) DataChanges(chunks *OrgChunks) map[string]any {
@@ -880,6 +941,9 @@ func (ch *ChunkChanges) IsEmpty() bool {
 func (ch *ChunkChanges) addLink(chunk OrgId, link string) {
 	if ch != nil {
 		if ch.Linked[chunk] == nil {
+			if ch.Linked == nil {
+				ch.Linked = make(map[OrgId]doc.Set[string], 4)
+			}
 			ch.Linked[chunk] = doc.NewSet(link)
 		} else {
 			ch.Linked[chunk].Add(link)
@@ -914,8 +978,17 @@ func getText(t orgTree) string {
 // returns changed blocks
 func (chunks *OrgChunks) Replace(offset, len int, text string) *ChunkChanges {
 	left, mid, right, newChunks := chunks.initialReplacement(offset, len, text)
+	fmt.Printf("TRIMMING CHUNKS\n")
+	fmt.Printf("  OLD:\n")
+	displayChunks("    ", mid)
+	fmt.Printf("  NEW:\n")
+	displayChunks("    ", newChunks)
 	left, mid, right, newChunks = trimUnchangedChunks(left, mid, right, newChunks)
 	changes := chunks.computeRemovesAndNewBlockIds(mid, newChunks)
+	fmt.Printf("  TRIMMED OLD:\n")
+	displayChunks("    ", mid)
+	fmt.Printf("  TRIMMED NEW:\n")
+	displayChunks("    ", newChunks)
 	fmt.Printf("NEW-CHUNKS: %+v\n", newChunks)
 	fmt.Printf("CHANGES: %+v\n", changes)
 	newChunks.Each(func(chunk Chunk) bool {
@@ -1008,6 +1081,12 @@ func (chunks *OrgChunks) initialReplacement(offset, len int, text string) (orgTr
 	mid, right := rest.Split(func(m OrgMeasure) bool {
 		return m.Width >= len
 	})
+	nodes := []string{}
+	mid.AddLast(right.PeekFirst()).Each(func(chunk Chunk) bool {
+		nodes = append(nodes, string(chunk.AsOrgChunk().Id))
+		return true
+	})
+	fmt.Printf("Affecting nodes: %s\n", strings.Join(nodes, " "))
 	for i := 0; i < 2 && !right.IsEmpty(); i++ {
 		mid = mid.AddLast(right.PeekFirst())
 		right = right.RemoveFirst()
@@ -1025,6 +1104,14 @@ func (chunks *OrgChunks) initialReplacement(offset, len int, text string) (orgTr
 	sb.WriteString(text)
 	sb.WriteString(txt[offset+len:])
 	return left, mid, right, Parse(sb.String()).Chunks
+}
+
+func displayChunks(prefix string, chunks orgTree) {
+	chunks.Each(func(chunk Chunk) bool {
+		fmt.Printf("%s%s: <%s>\n", prefix, chunk.AsOrgChunk().Id,
+			strings.ReplaceAll(chunk.text(), "\n", "\n"+prefix))
+		return true
+	})
 }
 
 func trimUnchangedChunks(left, mid, right, new orgTree) (orgTree, orgTree, orgTree, orgTree) {
