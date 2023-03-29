@@ -55,7 +55,7 @@ func SetVerbosity(level int) {
 }
 
 func verbose(level int, format string, args ...any) {
-	if level >= verbosity {
+	if level <= verbosity {
 		fmt.Printf(format, args...)
 	}
 }
