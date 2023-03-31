@@ -571,8 +571,17 @@ func (chunks *OrgChunks) clearParent(id OrgId, changes *ChunkChanges) {
 
 func (chunks *OrgChunks) addPending() {
 	if chunks.PendingText.Len() > 0 {
-		chunks.Chunks = chunks.Chunks.AddLast(chunks.newBasicChunk(TextType, chunks.PendingText.String()))
+		str := chunks.PendingText.String()
 		chunks.PendingText.Reset()
+		for len(str) > 0 {
+			pos := strings.Index(str, "\n\n") + 2
+			if pos == 1 {
+				chunks.Chunks = chunks.Chunks.AddLast(chunks.newBasicChunk(TextType, str))
+				break
+			}
+			chunks.Chunks = chunks.Chunks.AddLast(chunks.newBasicChunk(TextType, str[:pos]))
+			str = str[pos:]
+		}
 	}
 }
 
