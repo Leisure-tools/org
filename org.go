@@ -3,10 +3,10 @@ package org
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
-	"unicode"
 
 	// support for low-res parsing of org-mode files
 	// this parses into blocks and tracks character offsets
@@ -56,7 +56,7 @@ func SetVerbosity(level int) {
 
 func verbose(level int, format string, args ...any) {
 	if level <= verbosity {
-		fmt.Printf(format, args...)
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
 	}
 }
 
@@ -78,6 +78,7 @@ var headlineRE = re(`headline`, `(?m)^(\*+) +(\S.*)?$`)
 var keywordRE = re(`keyword`, `(?m)^#\+([^: \n]+): *(.*)$`)
 var drawerRE = re(`drawer`, `(?m)^:([^: \n]+): *$`)
 var drawerEndRE = re(`drawer-end`, `(?im)^:end: *$`)
+var propertyRE = re(`property`, `(?m)^:([^: \n]+): *(.*)$`)
 var blockStartRE = re(`block-start`, `(?im)^(?:#\+begin_(\S+)|#\+begin:)(.*)$`)
 var blockEndRE = re(`block-end`, `(?im)^(?:#\+end_(\S+)|#\+end:)(.*)$`)
 var tableRowRE = re(`table`, `(?m)^ *\|.*\| *$`)
@@ -85,6 +86,7 @@ var htmlStartRE = re(`html-start`, `(?im)^#\+begin_html *(\S+)?(?: +(.*))?$`)
 var srcStartRE = re(`src-start`, `(?im)^#\+begin_src *(\S+)?(?: +(.*))?$`)
 var srcEndRE = re(`src-end`, `(?im)^#\+end_src *$`)
 var resultsRE = re(`results`, `(?im)^(#+results:(.*)|results:) *$`)
+var tokenRE = re(`token`, `([^\s"']|\\.)+|"([^\s"]|\\.)*"|'([^\s']|\\.)*'`)
 
 /// orgTree
 
@@ -178,6 +180,7 @@ type Block struct {
 	LabelEnd int
 	Content  int
 	End      int // start of last line
+	Options  []string
 }
 
 type DataBlock interface {
@@ -188,12 +191,16 @@ type DataBlock interface {
 // if this has children, the last one will be a results block
 type SourceBlock struct {
 	Block
-	Options []string
-	Value   any // parsed value for supported data types
+	Value any // parsed value for supported data types
 	// these are relevant only if there is a preceding name element
 	NameStart int
 	NameEnd   int // this is 0 if there is no name
 	SrcStart  int // this is 0 if there is no name
+}
+
+type Drawer struct {
+	Block
+	Properties map[string]string
 }
 
 type TableBlock struct {
@@ -229,6 +236,12 @@ type ChunkRef struct {
 
 var illegalBlockContent = doc.NewSet(KeywordType, BlockType, SourceType)
 
+func addProp(name string, value any, m map[string]any) {
+	if value != nil {
+		m[name] = value
+	}
+}
+
 func addIntProp(name string, value int, m map[string]any) {
 	if value >= 0 {
 		m[name] = value
@@ -239,6 +252,10 @@ func addIdProp(name string, value OrgId, m map[string]any) {
 	if value != "" {
 		m[name] = value
 	}
+}
+
+func (ch *BasicChunk) Json() map[string]any {
+	return ch.jsonRep(&OrgChunks{})
 }
 
 func (ch *BasicChunk) jsonRep(chunks *OrgChunks) map[string]any {
@@ -278,6 +295,7 @@ func (ch *Block) jsonRep(chunks *OrgChunks) map[string]any {
 	rep := ch.BasicChunk.jsonRep(chunks)
 	addIntProp("label", ch.Label, rep)
 	addIntProp("labelEnd", ch.LabelEnd, rep)
+	addProp("options", ch.Options, rep)
 	rep["content"] = ch.Content
 	rep["end"] = ch.End
 	return rep
@@ -327,21 +345,30 @@ func (ch *SourceBlock) SetValue(value any) (str string, err error) {
 
 func (ch *SourceBlock) jsonRep(chunks *OrgChunks) map[string]any {
 	rep := ch.Block.jsonRep(chunks)
-	if ch.Options != nil {
-		rep["options"] = ch.Options
-	}
 	if ch.IsData() {
-		rep["value"] = ch.Value
+		addProp("value", ch.Value, rep)
 	}
-	if ch.NameStart != 0 {
-		rep["nameStart"] = ch.NameStart
+	addIntProp("nameStart", ch.NameStart, rep)
+	addIntProp("nameEnd", ch.NameEnd, rep)
+	addIntProp("srcStart", ch.SrcStart, rep)
+	return rep
+}
+
+func (ch *Drawer) jsonRep(chunks *OrgChunks) map[string]any {
+	rep := ch.Block.jsonRep(chunks)
+	if len(ch.Properties) > 0 {
+		rep["properties"] = ch.Properties
 	}
-	if ch.NameEnd != 0 {
-		rep["nameEnd"] = ch.NameEnd
-	}
-	if ch.SrcStart != 0 {
-		rep["srcStart"] = ch.SrcStart
-	}
+	return rep
+}
+
+func (ch *TableBlock) jsonRep(chunks *OrgChunks) map[string]any {
+	rep := ch.BasicChunk.jsonRep(chunks)
+	addProp("cells", ch.Cells, rep)
+	addProp("values", ch.Value, rep)
+	addIntProp("nameStart", ch.NameStart, rep)
+	addIntProp("nameEnd", ch.NameEnd, rep)
+	addIntProp("tblStart", ch.TblStart, rep)
 	return rep
 }
 
@@ -492,6 +519,7 @@ func (chunks *OrgChunks) MarshalJSON() ([]byte, error) {
 }
 
 func (chunks *OrgChunks) LocateChunkNamed(name string) (int, ChunkRef) {
+	verbose(1, "chunks: %v", chunks)
 	left, right := chunks.Chunks.Split(func(m OrgMeasure) bool {
 		return m.Names.Has(name)
 	})
@@ -499,6 +527,16 @@ func (chunks *OrgChunks) LocateChunkNamed(name string) (int, ChunkRef) {
 		return left.Measure().Width, ChunkRef{right.PeekFirst(), chunks}
 	}
 	return 0, ChunkRef{}
+}
+
+func (chunks *OrgChunks) GetChunkAt(offset int) ChunkRef {
+	_, right := chunks.Chunks.Split(func(m OrgMeasure) bool {
+		return m.Width > offset
+	})
+	if !right.IsEmpty() {
+		return ChunkRef{right.PeekFirst(), chunks}
+	}
+	return ChunkRef{}
 }
 
 func (chunks *OrgChunks) GetChunkNamed(name string) ChunkRef {
@@ -606,18 +644,36 @@ func (chunks *OrgChunks) newBasicChunk(tp OrgType, text string) *BasicChunk {
 }
 
 func (chunks *OrgChunks) addBlock(tp OrgType, label, labelEnd int, line, rest string) string {
+	if tp == DrawerType {
+		verbose(1, "REST OF DRAWER: '%s'", line)
+	}
 	sb := strings.Builder{}
 	sb.WriteString(line)
 	oldRest := rest
 	pos := len(line)
 	content := pos
+	firstLine := line
 	for rest != "" {
 		line, rest = eatLine(rest)
 		sb.WriteString(line)
 		typ, fun, _ := chunks.lineType(line)
 		if typ == tp && fun == nil {
+			if tp == DrawerType {
+				verbose(1, "END OF DRAWER: '%s'", line)
+			}
 			if tp == BlockType && htmlStartRE.MatchString(line) {
 				tp = HtmlType
+			}
+			options := ([]string)(nil)
+			if labelEnd < len(firstLine) && labelEnd >= 0 {
+				verbose(1, "GETTING OPTIONS FOR %s", firstLine[labelEnd:])
+				options = tokenRE.FindAllString(firstLine[labelEnd:], -1)
+				for i, opt := range options {
+					if (opt[0] == '"' || opt[0] == '\'') && opt[0] == opt[len(opt)-1] {
+						options[i] = opt[1 : len(opt)-1]
+					}
+				}
+				verbose(1, "OPTIONS: %s", strings.Join(options, ", "))
 			}
 			chunks.add(&Block{
 				BasicChunk: *chunks.newBasicChunk(tp, sb.String()),
@@ -625,6 +681,7 @@ func (chunks *OrgChunks) addBlock(tp OrgType, label, labelEnd int, line, rest st
 				End:        pos,
 				Label:      label,
 				LabelEnd:   labelEnd,
+				Options:    options,
 			})
 			return rest
 		} else if illegalBlockContent[typ] {
@@ -642,10 +699,10 @@ func (typ OrgType) isSourcePrecursor() bool {
 func (chunks *OrgChunks) lineType(line string) (OrgType, func(m []int, line, rest string) string, []int) {
 	if m := headlineRE.FindStringSubmatchIndex(line); len(m) > 0 {
 		return HeadlineType, chunks.parseHeadline, m
-	} else if m := drawerRE.FindStringSubmatchIndex(line); len(m) > 0 {
-		return DrawerType, chunks.parseDrawer, m
 	} else if m := drawerEndRE.FindStringSubmatchIndex(line); len(m) > 0 {
 		return DrawerType, nil, m
+	} else if m := drawerRE.FindStringSubmatchIndex(line); len(m) > 0 {
+		return DrawerType, chunks.parseDrawer, m
 	} else if m := srcStartRE.FindStringSubmatchIndex(line); len(m) > 0 {
 		return SourceType, chunks.parseSource, m
 	} else if m := srcEndRE.FindStringSubmatchIndex(line); len(m) > 0 {
@@ -671,7 +728,25 @@ func (chunks *OrgChunks) parseHeadline(m []int, line, rest string) string {
 }
 
 func (chunks *OrgChunks) parseDrawer(m []int, line, rest string) string {
+	verbose(1, "STARTING DRAWER: '%s'", line)
 	if newRest := chunks.addBlock(DrawerType, m[2], m[3], line, rest); len(newRest) < len(rest) {
+		drawer, _ := chunks.Chunks.PeekLast().(*Block)
+		chunks.Chunks = chunks.Chunks.RemoveLast()
+		verbose(1, "PARSED DRAWER: '%+v'", drawer)
+		lines := strings.Split(drawer.Text[drawer.Content:drawer.End], "\n")
+		props := make(map[string]string, len(lines))
+		for _, line := range lines {
+			if m := propertyRE.FindStringSubmatch(line); len(m) > 0 {
+				props[m[1]] = m[2]
+			}
+		}
+		if len(props) == 0 {
+			props = nil
+		}
+		chunks.add(&Drawer{
+			Block:      *drawer,
+			Properties: props,
+		})
 		return newRest
 	}
 	return line + rest
@@ -679,30 +754,9 @@ func (chunks *OrgChunks) parseDrawer(m []int, line, rest string) string {
 
 func (chunks *OrgChunks) parseSource(m []int, line, rest string) string {
 	if newRest := chunks.addBlock(SourceType, m[2], m[3], line, rest); len(newRest) < len(rest) {
-		// thanks to Soheil Hassas Yeganeh
-		// https://groups.google.com/g/golang-nuts/c/pNwqLyfl2co/m/APaZSSvQUAAJ
-		lastQuote := rune(0)
-		f := func(c rune) bool {
-			switch {
-			case c == lastQuote:
-				lastQuote = rune(0)
-				return false
-			case lastQuote != rune(0):
-				return false
-			case unicode.In(c, unicode.Quotation_Mark):
-				lastQuote = c
-				return false
-			default:
-				return unicode.IsSpace(c)
-			}
-		}
 		blk, _ := chunks.Chunks.PeekLast().(*Block)
 		chunks.Chunks = chunks.Chunks.RemoveLast()
-		options := ([]string)(nil)
 		value := (any)(nil)
-		if m[4] >= 0 {
-			options = strings.FieldsFunc(line[m[4]:m[5]], f)
-		}
 		var err error
 		if content := strings.TrimSpace(blk.Text[blk.Content:blk.End]); content != "" {
 			if language := strings.ToLower(blk.LabelText()); language == "json" {
@@ -718,9 +772,8 @@ func (chunks *OrgChunks) parseSource(m []int, line, rest string) string {
 			}
 		}
 		chunks.add(&SourceBlock{
-			Block:   *blk,
-			Options: options,
-			Value:   value,
+			Block: *blk,
+			Value: value,
 		})
 		return newRest
 	}
@@ -801,8 +854,8 @@ func (chunks *OrgChunks) parseTable(m []int, line, rest string) string {
 			rowStrings = append(rowStrings, strs)
 			rowValues = append(rowValues, values)
 			line, rest = eatLine(rest)
-			if maxLen < len(rowStrings) {
-				maxLen = len(rowStrings)
+			if maxLen < len(strs) {
+				maxLen = len(strs)
 			}
 		} else {
 			break
@@ -810,10 +863,29 @@ func (chunks *OrgChunks) parseTable(m []int, line, rest string) string {
 	}
 	// make it rectangular
 	for i, strRow := range rowStrings {
-		for len(strRow) < maxLen {
-			rowStrings[i] = append(rowStrings[i], "")
-			rowValues[i] = append(rowValues[i], nil)
+		isheader := true
+		for _, str := range strRow {
+			if matched, _ := regexp.MatchString(`^-[\-+ ]*$`, str); !matched {
+				isheader = false
+				break
+			}
 		}
+		if isheader {
+			for j := range strRow {
+				strRow[j] = "-"
+				rowValues[i][j] = "-"
+			}
+		}
+		for len(strRow) < maxLen {
+			if isheader {
+				strRow = append(strRow, "-")
+				rowValues[i] = append(rowValues[i], "-")
+			} else {
+				strRow = append(strRow, "")
+				rowValues[i] = append(rowValues[i], nil)
+			}
+		}
+		rowStrings[i] = strRow
 	}
 	chunks.add(&TableBlock{
 		BasicChunk: *chunks.newBasicChunk(TableType, sb.String()),
@@ -824,17 +896,23 @@ func (chunks *OrgChunks) parseTable(m []int, line, rest string) string {
 }
 
 func parseTableRow(row string) ([]string, []any) {
+	if _, err := regexp.MatchString(`^|-[-+ ]*| *$`, strings.TrimSpace(row)); err != nil {
+		return []string{row}, []any{}
+	}
 	strs := make([]string, 0, 8)
 	values := make([]any, 0, 8)
-	for _, cell := range strings.Split(row, "|") {
+	cells := strings.Split(row, "|")
+	if len(cells) > 1 {
+		cells = cells[1 : len(cells)-1]
+	}
+	for _, cell := range cells {
 		var cellValue any
-		strs = append(strs, strings.TrimSpace(cell))
-		if len(strs[len(strs)-1]) == 0 {
-			values = append(values, nil)
-		} else if err := json.Unmarshal([]byte(cell), &cellValue); err == nil {
+		cellStr := strings.TrimSpace(cell)
+		strs = append(strs, cell)
+		if err := json.Unmarshal([]byte(cellStr), &cellValue); err == nil {
 			values = append(values, cellValue)
 		} else {
-			values = append(values, strings.TrimSpace(cell))
+			values = append(values, cell)
 		}
 	}
 	return strs, values
@@ -861,7 +939,7 @@ func (chunks *OrgChunks) RelinkHierarchy(changes *ChunkChanges) {
 	chunk := Chunk(nil)
 	for !t.IsEmpty() {
 		chunk, t = chunks.relinkChunk(t, 0, changes)
-		verbose(1, "Clearing parent of %s\n", chunk.AsOrgChunk().Id)
+		verbose(1, "Clearing parent of %s", chunk.AsOrgChunk().Id)
 		chunks.clearParent(chunk.AsOrgChunk().Id, changes)
 	}
 }
@@ -874,7 +952,7 @@ func (chunks *OrgChunks) relinkChunk(tree orgTree, level int, changes *ChunkChan
 			if hl2, ok := child.(*Headline); ok && hl2.Level <= hl.Level {
 				break
 			}
-			verbose(1, "Relinking parent of %s to %s\n", child.AsOrgChunk().Id, hl.AsOrgChunk().Id)
+			verbose(1, "Relinking parent of %s to %s", child.AsOrgChunk().Id, hl.AsOrgChunk().Id)
 			if chunks.Parent[child.AsOrgChunk().Id] != hl.Id {
 				chunks.clearParent(child.AsOrgChunk().Id, changes)
 				chunks.link(child.AsOrgChunk().Id, "parent", hl.Id, changes)
@@ -1000,19 +1078,19 @@ func getText(t orgTree) string {
 // returns changed blocks
 func (chunks *OrgChunks) Replace(offset, len int, text string) *ChunkChanges {
 	left, mid, right, newChunks := chunks.initialReplacement(offset, len, text)
-	verbose(1, "TRIMMING CHUNKS\n")
-	verbose(1, "  OLD:\n")
+	verbose(1, "TRIMMING CHUNKS")
+	verbose(1, "  OLD:")
 	DisplayChunks("    ", mid)
-	verbose(1, "  NEW:\n")
+	verbose(1, "  NEW:")
 	DisplayChunks("    ", newChunks)
 	left, mid, right, newChunks = trimUnchangedChunks(left, mid, right, newChunks)
 	changes := chunks.computeRemovesAndNewBlockIds(mid, newChunks)
-	verbose(1, "  TRIMMED OLD:\n")
+	verbose(1, "  TRIMMED OLD:")
 	DisplayChunks("    ", mid)
-	verbose(1, "  TRIMMED NEW:\n")
+	verbose(1, "  TRIMMED NEW:")
 	DisplayChunks("    ", newChunks)
-	verbose(1, "NEW-CHUNKS: %+v\n", newChunks)
-	verbose(1, "CHANGES: %+v\n", changes)
+	verbose(1, "NEW-CHUNKS: %+v", newChunks)
+	verbose(1, "CHANGES: %+v", changes)
 	newChunks.Each(func(chunk Chunk) bool {
 		chunks.ChunkIds[chunk.AsOrgChunk().Id] = chunk
 		return true
@@ -1117,22 +1195,22 @@ func (chunks *OrgChunks) initialReplacement(offset, len int, text string) (orgTr
 	})
 	//DIAG
 	str := treeText(chunks.Chunks)
-	verbose(1, "@ REPLACE %d %d <%s>\n", offset, len, escnl(text))
-	verbose(1, "@ left <%s>\n", escnl(str[:offset]))
-	verbose(1, "@ mid <%s>\n", escnl(str[offset:offset+len]))
-	verbose(1, "@ right <%s>\n", escnl(str[offset+len:]))
-	verbose(1, "\n@ left chunks <%s>\n", treeText(left))
-	verbose(1, "@ mid chunks <%s>\n", treeText(mid.AddLast(right.PeekFirst())))
-	verbose(1, "@ right chunks <%s>\n", treeText(right.RemoveFirst()))
+	verbose(1, "@ REPLACE %d %d <%s>", offset, len, escnl(text))
+	verbose(1, "@ left <%s>", escnl(str[:offset]))
+	verbose(1, "@ mid <%s>", escnl(str[offset:offset+len]))
+	verbose(1, "@ right <%s>", escnl(str[offset+len:]))
+	verbose(1, "@ left chunks <%s>", treeText(left))
+	verbose(1, "@ mid chunks <%s>", treeText(mid.AddLast(right.PeekFirst())))
+	verbose(1, "@ right chunks <%s>", treeText(right.RemoveFirst()))
 	for _, chunk := range mid.AddLast(right.PeekFirst()).ToSlice() {
-		verbose(1, "%s\n", escnl(fmt.Sprintf("mid: %+v", chunk)))
+		verbose(1, "%s", escnl(fmt.Sprintf("mid: %+v", chunk)))
 	}
 	diagsb := strings.Builder{}
 	mid.AddLast(right.PeekFirst()).Each(func(chunk Chunk) bool {
 		fmt.Fprintf(&diagsb, " %s", string(chunk.AsOrgChunk().Id))
 		return true
 	})
-	verbose(1, "@ AFFECTING NODES:%s\n", diagsb.String())
+	verbose(1, "@ AFFECTING NODES:%s", diagsb.String())
 	//END DIAG
 	for i := 0; i < 2 && !right.IsEmpty(); i++ {
 		mid = mid.AddLast(right.PeekFirst())
@@ -1157,7 +1235,7 @@ func (chunks *OrgChunks) initialReplacement(offset, len int, text string) (orgTr
 func DisplayChunks(prefix string, chunks orgTree) {
 	if verbosity > 0 {
 		chunks.Each(func(chunk Chunk) bool {
-			verbose(1, "%s%s: <%s>\n", prefix, chunk.AsOrgChunk().Id,
+			verbose(1, "%s%s: <%s>", prefix, chunk.AsOrgChunk().Id,
 				strings.ReplaceAll(chunk.text(), "\n", "\\n"))
 			return true
 		})
