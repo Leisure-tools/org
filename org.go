@@ -185,7 +185,10 @@ type Block struct {
 
 type DataBlock interface {
 	Chunk
+	Name() string
+	GetValue() any
 	SetValue(value any) (str string, err error)
+	IsNamedData() bool
 }
 
 // if this has children, the last one will be a results block
@@ -321,6 +324,10 @@ func (ch *SourceBlock) IsData() bool {
 	return lang == "json" || lang == "yaml" || lang == "toml"
 }
 
+func (ch *SourceBlock) GetValue() any {
+	return ch.Value
+}
+
 func (ch *SourceBlock) SetValue(value any) (str string, err error) {
 	sb := strings.Builder{}
 	sb.WriteString(ch.Text[:ch.Content])
@@ -372,11 +379,19 @@ func (ch *TableBlock) jsonRep(chunks *OrgChunks) map[string]any {
 	return rep
 }
 
+func (ch *TableBlock) IsNamedData() bool {
+	return ch.Name() != ""
+}
+
 func (ch *TableBlock) Name() string {
 	if ch.NameStart == -1 || ch.NameEnd <= ch.NameStart {
 		return ""
 	}
 	return ch.Text[ch.NameStart:ch.NameEnd]
+}
+
+func (ch *TableBlock) GetValue() any {
+	return ch.Value
 }
 
 func (ch *TableBlock) SetValue(value any) (str string, err error) {
@@ -847,17 +862,20 @@ func (chunks *OrgChunks) parseTable(m []int, line, rest string) string {
 	rowStrings := make([][]string, 0, 10)
 	sb := strings.Builder{}
 	maxLen := 0
+	prevrest := ""
 	for {
 		if typ, _, _ := chunks.lineType(line); typ == TableType {
 			sb.WriteString(line)
 			strs, values := parseTableRow(line)
 			rowStrings = append(rowStrings, strs)
 			rowValues = append(rowValues, values)
+			prevrest = rest
 			line, rest = eatLine(rest)
 			if maxLen < len(strs) {
 				maxLen = len(strs)
 			}
 		} else {
+			rest = prevrest
 			break
 		}
 	}
@@ -1022,13 +1040,15 @@ func (ch *ChunkChanges) Order(chunks *OrgChunks) []OrgId {
 	return result
 }
 
-func (ch *ChunkChanges) DataChanges(chunks *OrgChunks) map[string]any {
+func (ch *ChunkChanges) DataChanges(chunks *OrgChunks, wantsOrg bool) map[string]any {
 	result := make(map[string]any, len(ch.Changed)+len(ch.Added))
 	for id := range ch.Changed.Union(ch.Added) {
-		if src, ok := chunks.ChunkIds[id].(*SourceBlock); ok && src.IsNamedData() {
-			result[src.Name()] = src.Value
-		} else if tbl, ok := chunks.ChunkIds[id].(*TableBlock); ok && tbl.Name() != "" {
-			result[tbl.Name()] = tbl.Value
+		if data, ok := chunks.ChunkIds[id].(DataBlock); ok && data.Name() != "" {
+			if wantsOrg {
+				result[data.Name()] = data
+			} else if data.IsNamedData() {
+				result[data.Name()] = data.GetValue()
+			}
 		}
 	}
 	return result
@@ -1179,43 +1199,53 @@ func treeText(tr orgTree) string {
 	for _, chunk := range tr.ToSlice() {
 		fmt.Fprint(&sb, chunk.text())
 	}
-	return escnl(sb.String())
+	return sb.String()
 }
 
-func (chunks *OrgChunks) initialReplacement(offset, len int, text string) (orgTree, orgTree, orgTree, orgTree) {
+func treeTextNl(tr orgTree) string {
+	return escnl(treeText(tr))
+}
+
+func (chunks *OrgChunks) initialReplacement(offset, length int, text string) (orgTree, orgTree, orgTree, orgTree) {
+	verbose(1, "offset: %d, len:%d, text len:%d", offset, length, len(text))
 	// offset will lie within the first chunk of mid
 	left, rest := chunks.Chunks.Split(func(m OrgMeasure) bool {
-		return m.Width >= offset
+		return m.Width > offset
 	})
-	adjLen := len + offset - left.Measure().Width
+	adjLen := length + offset - left.Measure().Width
 	// mid will contain almost all of the affected nodes
 	// right will contain the last affected node
 	mid, right := rest.Split(func(m OrgMeasure) bool {
-		return m.Width >= adjLen
+		return m.Width > adjLen
 	})
 	//DIAG
-	str := treeText(chunks.Chunks)
-	verbose(1, "@ REPLACE %d %d <%s>", offset, len, escnl(text))
-	verbose(1, "@ left <%s>", escnl(str[:offset]))
-	verbose(1, "@ mid <%s>", escnl(str[offset:offset+len]))
-	verbose(1, "@ right <%s>", escnl(str[offset+len:]))
-	verbose(1, "@ left chunks <%s>", treeText(left))
-	verbose(1, "@ mid chunks <%s>", treeText(mid.AddLast(right.PeekFirst())))
-	verbose(1, "@ right chunks <%s>", treeText(right.RemoveFirst()))
-	for _, chunk := range mid.AddLast(right.PeekFirst()).ToSlice() {
-		verbose(1, "%s", escnl(fmt.Sprintf("mid: %+v", chunk)))
+	if verbosity > 0 {
+		str := treeText(chunks.Chunks)
+		verbose(1, "@ REPLACE %d %d <%s>", offset, length, escnl(text))
+		verbose(1, "@ left <%s>", escnl(str[:offset]))
+		verbose(1, "@ mid <%s>", escnl(str[offset:offset+length]))
+		verbose(1, "@ right <%s>", escnl(str[offset+length:]))
+		verbose(1, "@ left chunks <%s>", treeTextNl(left))
+		verbose(1, "@ mid chunks <%s>", treeTextNl(mid))
+		verbose(1, "@ right chunks <%s>", treeTextNl(right))
+		verbose(1, "@ new mid chunks <%s>", treeTextNl(mid.AddLast(right.PeekFirst())))
+		verbose(1, "@ new right chunks <%s>", treeTextNl(right.RemoveFirst()))
+		for _, chunk := range mid.AddLast(right.PeekFirst()).ToSlice() {
+			verbose(1, "%s", escnl(fmt.Sprintf("mid: %+v", chunk)))
+		}
+		diagsb := strings.Builder{}
+		mid.AddLast(right.PeekFirst()).Each(func(chunk Chunk) bool {
+			fmt.Fprintf(&diagsb, " %s", string(chunk.AsOrgChunk().Id))
+			return true
+		})
+		verbose(1, "@ AFFECTING NODES:%s", diagsb.String())
 	}
-	diagsb := strings.Builder{}
-	mid.AddLast(right.PeekFirst()).Each(func(chunk Chunk) bool {
-		fmt.Fprintf(&diagsb, " %s", string(chunk.AsOrgChunk().Id))
-		return true
-	})
-	verbose(1, "@ AFFECTING NODES:%s", diagsb.String())
 	//END DIAG
-	for i := 0; i < 2 && !right.IsEmpty(); i++ {
-		mid = mid.AddLast(right.PeekFirst())
-		right = right.RemoveFirst()
-	}
+	//targetWid := offset - left.Measure().Width + length
+	//for i := 0; i < 2 && !right.IsEmpty(); i++ {
+	mid = mid.AddLast(right.PeekFirst())
+	right = right.RemoveFirst()
+	//}
 	offset -= left.Measure().Width
 	if !left.IsEmpty() {
 		last := left.PeekLast()
@@ -1228,15 +1258,28 @@ func (chunks *OrgChunks) initialReplacement(offset, len int, text string) (orgTr
 	sb := strings.Builder{}
 	sb.WriteString(txt[:offset])
 	sb.WriteString(text)
-	sb.WriteString(txt[offset+len:])
+	sb.WriteString(txt[offset+length:])
 	return left, mid, right, Parse(sb.String()).Chunks
 }
 
 func DisplayChunks(prefix string, chunks orgTree) {
 	if verbosity > 0 {
+		offset := 0
+		total := 0
+		maxname := 0
 		chunks.Each(func(chunk Chunk) bool {
-			verbose(1, "%s%s: <%s>", prefix, chunk.AsOrgChunk().Id,
-				strings.ReplaceAll(chunk.text(), "\n", "\\n"))
+			total += len(chunk.text())
+			namelen := len(chunk.AsOrgChunk().Id)
+			if maxname < namelen {
+				maxname = namelen
+			}
+			return true
+		})
+		wid := len(fmt.Sprint(total))*2 + 1
+		chunks.Each(func(chunk Chunk) bool {
+			org := chunk.AsOrgChunk()
+			verbose(1, "%s%*s %*s: <%s>", prefix, wid, fmt.Sprintf("%d-%d", offset, offset+len(org.Text)-1), maxname, org.Id, strings.ReplaceAll(chunk.text(), "\n", "\\n"))
+			offset += len(org.Text)
 			return true
 		})
 	}

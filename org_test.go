@@ -10,6 +10,8 @@ import (
 )
 
 var blocks = []string{
+	`
+`,
 	`#+TITLE: fred
 `,
 	`*  headline 1
@@ -36,9 +38,21 @@ a: 1
 b: 2
 #+end_src
 `,
+	`#+NAME: table1
+
+| a | b | c |
+|---+---+---|
+| 1 | 2 | 3 |
+| 4 |   | 5 |
+`,
+	`
+`,
+	`* headline 2
+`,
 }
 
 var types = []OrgType{
+	TextType,
 	KeywordType,
 	HeadlineType,
 	TextType,
@@ -47,6 +61,9 @@ var types = []OrgType{
 	SourceType,
 	TextType,
 	SourceType,
+	TableType,
+	TextType,
+	HeadlineType,
 }
 
 var doc1 = strings.Join(blocks, "")
@@ -88,9 +105,9 @@ func (t myT) failIfError(err error, format string, args ...any) {
 	}
 }
 
-func (t myT) failNowIfNot(cond bool, msg any) {
+func (t myT) failNowIfNot(cond bool, format string, args ...any) {
 	if !cond {
-		die(t, fmt.Sprint(msg, "\n"))
+		die(t, fmt.Sprintf(format+"\n", args...))
 	}
 }
 
@@ -111,23 +128,26 @@ func TestSimple(tt *testing.T) {
 		t.testEqual(chunks[i].AsOrgChunk().text(), blocks[i], "Block %d has wrong text", i)
 	}
 	t.testEqual(len(chunks), len(blocks), "Different number of blocks")
-	hChunk, ok := chunks[1].(*Headline)
-	t.failNowIfNot(ok, "Chunk 2 is not a headline")
-	t.testEqual(hChunk.Level, 1, "Chunk 2 level is not 1")
-	t.testEqual(hChunk.Text[hChunk.Level+2:len(hChunk.Text)-1], "headline 1", "Chunk 2 level is not 1")
-	srcChunk, ok := chunks[3].(*SourceBlock)
-	t.failNowIfNot(ok, "Chunk 4 is not a source block")
-	t.testEqual(srcChunk.LabelText(), "sh", "Chunk 3 language is not sh")
-	srcChunk, ok = chunks[5].(*SourceBlock)
-	t.failNowIfNot(ok, "Chunk 6 is not a source block")
-	t.testEqual(srcChunk.LabelText(), "yaml", "Chunk 6 language is not yaml")
+	hl1 := 2
+	sr1 := 4
+	sr2 := 6
+	hChunk, ok := chunks[hl1].(*Headline)
+	t.failNowIfNot(ok, "Chunk %d is not a headline", hl1)
+	t.testEqual(hChunk.Level, 1, "Chunk %d level is not 1", hl1)
+	t.testEqual(hChunk.Text[hChunk.Level+2:len(hChunk.Text)-1], "headline 1", "Chunk %d level is not 1", hl1)
+	srcChunk, ok := chunks[sr1].(*SourceBlock)
+	t.failNowIfNot(ok, "Chunk %d is not a source block", sr1)
+	t.testEqual(srcChunk.LabelText(), "sh", "Chunk %d language is not sh", sr1)
+	srcChunk, ok = chunks[sr2].(*SourceBlock)
+	t.failNowIfNot(ok, "Chunk %d is not a source block", sr2)
+	t.testEqual(srcChunk.LabelText(), "yaml", "Chunk %d language is not yaml", sr2)
 	val, ok := srcChunk.Value.(map[string]any)
-	t.failNowIfNot(ok, "Chunk 6 value is not a string map")
+	t.failNowIfNot(ok, "Chunk %d value is not a string map", sr2)
 	exp := `{"a":1,"b":2}`
-	t.failNowIfNot(ok, fmt.Sprintf(`Chunk 6 expected value <%s> but got <%s>`, exp, val))
-	t.testEqual(len(val), 2, fmt.Sprintf(`Chunk 6 expected value <%s> but got <%s>`, exp, val))
-	t.testEqual(val["a"], 1, fmt.Sprintf(`Chunk 6 expected value <%s> but got <%s>`, exp, val))
-	t.testEqual(val["b"], 2, fmt.Sprintf(`Chunk 6 expected value <%s> but got <%s>`, exp, val))
+	t.failNowIfNot(ok, fmt.Sprintf(`Chunk %d expected value <%s> but got <%s>`, sr2, exp, val))
+	t.testEqual(len(val), 2, fmt.Sprintf(`Chunk %d expected value <%s> but got <%s>`, sr2, exp, val))
+	t.testEqual(val["a"], 1, fmt.Sprintf(`Chunk %d expected value <%s> but got <%s>`, sr2, exp, val))
+	t.testEqual(val["b"], 2, fmt.Sprintf(`Chunk %d expected value <%s> but got <%s>`, sr2, exp, val))
 }
 
 func TestReplacement(tt *testing.T) {
