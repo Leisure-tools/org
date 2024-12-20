@@ -23,31 +23,31 @@ var blocks = []string{
 #+begin_src sh
 echo hello
 #+end_src
-`,
-	`
-`,
-	`#+begin_src yaml
+`, `
+`, `#+begin_src yaml
 a: 1
 b: 2
 #+end_src
-`,
-	`
-`,
-	`#+begin_src
+`, `
+`, `#+begin_src
 a: 1
 b: 2
 #+end_src
-`,
-	`#+NAME: table1
+`, `#+NAME: table1
 
 | a | b | c |
 |---+---+---|
 | 1 | 2 | 3 |
 | 4 |   | 5 |
-`,
-	`
-`,
-	`* headline 2
+`, `
+`, `* headline 2
+`, `#+begin_src bubba
+`, `#+begin_src fred
+a
+#+end_src
+`, `#+begin_src plurp
+`, `* headline 3
+`, `#+end_src
 `,
 }
 
@@ -64,6 +64,11 @@ var types = []OrgType{
 	TableType,
 	TextType,
 	HeadlineType,
+	TextType,
+	SourceType,
+	TextType,
+	HeadlineType,
+	TextType,
 }
 
 var doc1 = strings.Join(blocks, "")

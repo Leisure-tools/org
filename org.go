@@ -699,7 +699,7 @@ func (chunks *OrgChunks) addBlock(tp OrgType, label, labelEnd int, line, rest st
 				Options:    options,
 			})
 			return rest
-		} else if illegalBlockContent[typ] {
+		} else if !legalBlockContents(tp, typ, line) {
 			break
 		}
 		pos += len(line)
@@ -740,6 +740,11 @@ func (chunks *OrgChunks) parseHeadline(m []int, line, rest string) string {
 		Level:      m[3] - m[2],
 	})
 	return rest
+}
+
+func legalBlockContents(container, content OrgType, line string) bool {
+	return container == DrawerType && content != DrawerType ||
+		!illegalBlockContent[content] && (len(line) == 0 || line[0] != '*')
 }
 
 func (chunks *OrgChunks) parseDrawer(m []int, line, rest string) string {
@@ -792,7 +797,7 @@ func (chunks *OrgChunks) parseSource(m []int, line, rest string) string {
 		})
 		return newRest
 	}
-	return line + rest
+	return chunks.parseText(m, line, rest)
 }
 
 func (chunks *OrgChunks) parseBlock(m []int, line, rest string) string {
