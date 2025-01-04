@@ -4,32 +4,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"testing"
+
+	"github.com/leisure-tools/document"
+	"github.com/leisure-tools/lazyfingertree"
 )
 
 var blocks = []string{
 	`
-`,
-	`#+TITLE: fred
-`,
-	`*  headline 1
-`,
-	`
-`,
-	`#+name: bubba
+`, `#+TITLE: fred
+`, `*  headline 1
+`, `
+`, `#+name: bubba
 
 #+begin_src sh
 echo hello
 #+end_src
 `, `
-`, `#+begin_src yaml
+`, `#+NAME: data1
+#+begin_src yaml
 a: 1
 b: 2
 #+end_src
 `, `
-`, `#+begin_src
+`, `#+NAME: data2
+#+begin_src
 a: 1
 b: 2
 #+end_src
@@ -71,6 +73,20 @@ var types = []OrgType{
 	TextType,
 }
 
+const LOC_DOC = `#+NAME: ctrl1
+#+begin_src yaml :control :update 3 :root @person :owner julia :maluba "one two"
+name:
+number:
+#+end_src
+#+NAME: fred
+#+begin_src yaml
+2
+#+end_src
+#+NAME: joe
+#+begin_src yaml
+3
+#+end_src`
+
 var doc1 = strings.Join(blocks, "")
 
 var insert1 = `#+begin_src json
@@ -99,6 +115,13 @@ func die(t fallible, args ...any) {
 
 func (t myT) testEqual(actual any, expected any, format string, args ...any) {
 	if actual != expected {
+		msg := fmt.Sprintf(format, args...)
+		die(t, fmt.Sprintf("%s, expected\n <%v> but got\n <%v>\n", msg, expected, actual))
+	}
+}
+
+func (t myT) testDeepEqual(actual any, expected any, format string, args ...any) {
+	if !reflect.DeepEqual(actual, expected) {
 		msg := fmt.Sprintf(format, args...)
 		die(t, fmt.Sprintf("%s, expected\n <%v> but got\n <%v>\n", msg, expected, actual))
 	}
@@ -179,4 +202,43 @@ func TestReplacement(tt *testing.T) {
 	m, ok := obj.(map[string]any)
 	t.failNowIfNot(ok, "expected a string map")
 	t.failNowIfNot(m["text"] == insert1, "Unexpected text")
+}
+
+func TestLocation(tt *testing.T) {
+	t := myT{tt}
+	t.testDeepEqual(document.NewSet("fred", "joe"), document.NewSet("fred").Union(document.NewSet("joe")), "Bad set union")
+	chunkPile := Parse(LOC_DOC)
+	chunks := chunkPile.Chunks.ToSlice()
+	testName := func(meas OrgMeasure, name ...string) {
+		names := document.NewSet(name...)
+		t.testDeepEqual(names, meas.Names, "Error, %s does not match measurement %s", names, meas)
+	}
+	testChunkName := func(ch Chunk, name string) {
+		names := document.NewSet(name)
+		meas := orgMeasurer(true).Measure(ch)
+		t.testDeepEqual(names, meas.Names, "Error, %s does not measure with name %s", lazyfingertree.Brief(ch), name)
+	}
+	testChunkName(chunks[0], "ctrl1")
+	testChunkName(chunks[1], "fred")
+	testChunkName(chunks[2], "joe")
+	m := orgMeasurer(true)
+	id := m.Identity()
+	for i := range chunks {
+		testName(m.Sum(id, m.Measure(chunks[i])), Name(chunks[i]))
+	}
+	testName(m.Sum(m.Sum(id, m.Measure(chunks[1])), m.Measure(chunks[2])), "fred", "joe")
+	for _, name := range []string{"ctrl1", "fred", "joe"} {
+		_, r := chunkPile.LocateChunkNamed(name)
+		if r.IsEmpty() {
+			verbosity = 1
+			verbose(1, "\n\n\nERROR, COULD NOT FIND DATA BLOCK %s\n", name)
+			DisplayChunks("", chunkPile.Chunks)
+			verbose(1, "\nTREE\n")
+			chunkPile.Chunks.Dump(os.Stderr, 2)
+			verbose(1, "\n")
+			verbosity = 0
+		}
+		t.failNowIfNot(!r.IsEmpty(), "Could not find node %s", name)
+		t.testEqual(Name(r.Chunk), name, "node %#v is not named %s", r.Chunk, name)
+	}
 }

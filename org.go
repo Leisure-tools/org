@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -86,7 +87,9 @@ var htmlStartRE = re(`html-start`, `(?im)^#\+begin_html *(\S+)?(?: +(.*))?$`)
 var srcStartRE = re(`src-start`, `(?im)^#\+begin_src *(\S+)?(?: +(.*))?$`)
 var srcEndRE = re(`src-end`, `(?im)^#\+end_src *$`)
 var resultsRE = re(`results`, `(?im)^(#+results:(.*)|results:) *$`)
-var tokenRE = re(`token`, `([^\s"']|\\.)+|"([^\s"]|\\.)*"|'([^\s']|\\.)*'`)
+
+// var tokenRE = re(`token`, `([^\s"']|\\.)+|"([^\s"]|\\.)*"|'([^\s']|\\.)*'`)
+var tokenRE = re(`token`, `'[^']*'|"[^"]*"|[^\s'"]+`)
 
 /// orgTree
 
@@ -101,6 +104,10 @@ type OrgMeasure struct {
 	Ids   doc.Set[OrgId]
 }
 
+func (m OrgMeasure) String() string {
+	return fmt.Sprintf("Count: %d Width %d Names %s Ids %s", m.Count, m.Width, m.Names, m.Ids)
+}
+
 func measure(ch Chunk) OrgMeasure {
 	return orgMeasurer(true).Measure(ch)
 }
@@ -110,11 +117,10 @@ func (m orgMeasurer) Identity() OrgMeasure {
 }
 
 func (m orgMeasurer) Measure(blk Chunk) OrgMeasure {
-	names := doc.Set[string](nil)
-	if src, ok := blk.(*SourceBlock); ok {
-		names = doc.NewSet(src.Name())
-	} else if tbl, ok := blk.(*TableBlock); ok {
-		names = doc.NewSet(tbl.Name())
+	names := doc.NewSet[string]()
+	name := Name(blk)
+	if name != "" {
+		names.Add(name)
 	}
 	return OrgMeasure{
 		Count: 1,
@@ -181,6 +187,10 @@ type Block struct {
 	Content  int
 	End      int // start of last line
 	Options  []string
+}
+
+type Named interface {
+	Name() string
 }
 
 type DataBlock interface {
@@ -257,6 +267,10 @@ func addIdProp(name string, value OrgId, m map[string]any) {
 	}
 }
 
+func (ch *BasicChunk) Brief() string {
+	return fmt.Sprintf("%s: %s", ch.Id, reflect.TypeOf(ch))
+}
+
 func (ch *BasicChunk) Json() map[string]any {
 	return ch.jsonRep(&OrgChunks{})
 }
@@ -306,6 +320,13 @@ func (ch *Block) jsonRep(chunks *OrgChunks) map[string]any {
 
 func (ch *SourceBlock) Language() string {
 	return strings.ToLower(ch.LabelText())
+}
+
+func Name(ch any) string {
+	if n, ok := ch.(Named); ok {
+		return n.Name()
+	}
+	return ""
 }
 
 func (ch *SourceBlock) Name() string {
@@ -430,7 +451,7 @@ func (blk ChunkRef) ref(id OrgId) ChunkRef {
 	return ChunkRef{blk.ChunkIds[id], blk.OrgChunks}
 }
 
-func (blk ChunkRef) isEmpty() bool {
+func (blk ChunkRef) IsEmpty() bool {
 	return blk.Chunk == nil
 }
 
@@ -838,6 +859,7 @@ func (chunks *OrgChunks) parseKeyword(m []int, line, rest string) string {
 				src.NameEnd = m[5]
 				sb.WriteString(src.Text)
 				src.Text = sb.String()
+				chunks.Chunks = chunks.Chunks.RemoveLast().AddLast(src)
 				return srcRest
 			}
 		} else if typ == TableType {
@@ -849,6 +871,7 @@ func (chunks *OrgChunks) parseKeyword(m []int, line, rest string) string {
 				tbl.NameEnd = m[5]
 				sb.WriteString(tbl.Text)
 				tbl.Text = sb.String()
+				chunks.Chunks = chunks.Chunks.RemoveLast().AddLast(tbl)
 				return tblRest
 			}
 		}
@@ -1267,23 +1290,32 @@ func (chunks *OrgChunks) initialReplacement(offset, length int, text string) (or
 	return left, mid, right, Parse(sb.String()).Chunks
 }
 
-func DisplayChunks(prefix string, chunks orgTree) {
-	if verbosity > 0 {
+func DisplayChunks(prefix string, chunks orgTree, verboseopt ...int) {
+	v := verbosity
+	if len(verboseopt) > 0 && verboseopt[0] > v {
+		v = verboseopt[0]
+	}
+	if v > 0 {
 		offset := 0
 		total := 0
 		maxname := 0
+		maxchname := 0
 		chunks.Each(func(chunk Chunk) bool {
 			total += len(chunk.text())
 			namelen := len(chunk.AsOrgChunk().Id)
 			if maxname < namelen {
 				maxname = namelen
 			}
+			chnamelen := len(Name(chunk))
+			if maxchname < chnamelen {
+				maxchname = chnamelen
+			}
 			return true
 		})
 		wid := len(fmt.Sprint(total))*2 + 1
 		chunks.Each(func(chunk Chunk) bool {
 			org := chunk.AsOrgChunk()
-			verbose(1, "%s%*s %*s: <%s>", prefix, wid, fmt.Sprintf("%d-%d", offset, offset+len(org.Text)-1), maxname, org.Id, strings.ReplaceAll(chunk.text(), "\n", "\\n"))
+			verbose(1, "%s%*s %*s [%-*s]: <%s>", prefix, wid, fmt.Sprintf("%d-%d", offset, offset+len(org.Text)-1), maxname, org.Id, maxchname, Name(chunk), strings.ReplaceAll(chunk.text(), "\n", "\\n"))
 			offset += len(org.Text)
 			return true
 		})
