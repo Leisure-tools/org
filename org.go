@@ -3,6 +3,7 @@ package org
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"regexp"
@@ -146,7 +147,7 @@ type OrgId string
 type idSet = doc.Set[OrgId]
 
 type Jsonable interface {
-	jsonRep(chunks *OrgChunks) map[string]any
+	JsonRep(chunks *OrgChunks) map[string]any
 }
 
 type OrgChunks struct {
@@ -272,10 +273,10 @@ func (ch *BasicChunk) Brief() string {
 }
 
 func (ch *BasicChunk) Json() map[string]any {
-	return ch.jsonRep(&OrgChunks{})
+	return ch.JsonRep(&OrgChunks{})
 }
 
-func (ch *BasicChunk) jsonRep(chunks *OrgChunks) map[string]any {
+func (ch *BasicChunk) JsonRep(chunks *OrgChunks) map[string]any {
 	id := ch.Id
 	m := map[string]any{
 		"type": typeNames[ch.Type],
@@ -295,8 +296,8 @@ func (ch *BasicChunk) AsOrgChunk() *BasicChunk {
 	return ch
 }
 
-func (ch *Headline) jsonRep(chunks *OrgChunks) map[string]any {
-	rep := ch.BasicChunk.jsonRep(chunks)
+func (ch *Headline) JsonRep(chunks *OrgChunks) map[string]any {
+	rep := ch.BasicChunk.JsonRep(chunks)
 	rep["level"] = ch.Level
 	return rep
 }
@@ -308,8 +309,8 @@ func (ch *Block) LabelText() string {
 	return ch.Text[ch.Label:ch.LabelEnd]
 }
 
-func (ch *Block) jsonRep(chunks *OrgChunks) map[string]any {
-	rep := ch.BasicChunk.jsonRep(chunks)
+func (ch *Block) JsonRep(chunks *OrgChunks) map[string]any {
+	rep := ch.BasicChunk.JsonRep(chunks)
 	addIntProp("label", ch.Label, rep)
 	addIntProp("labelEnd", ch.LabelEnd, rep)
 	addProp("options", ch.Options, rep)
@@ -371,8 +372,8 @@ func (ch *SourceBlock) SetValue(value any) (str string, err error) {
 	return
 }
 
-func (ch *SourceBlock) jsonRep(chunks *OrgChunks) map[string]any {
-	rep := ch.Block.jsonRep(chunks)
+func (ch *SourceBlock) JsonRep(chunks *OrgChunks) map[string]any {
+	rep := ch.Block.JsonRep(chunks)
 	if ch.IsData() {
 		addProp("value", ch.Value, rep)
 	}
@@ -382,16 +383,16 @@ func (ch *SourceBlock) jsonRep(chunks *OrgChunks) map[string]any {
 	return rep
 }
 
-func (ch *Drawer) jsonRep(chunks *OrgChunks) map[string]any {
-	rep := ch.Block.jsonRep(chunks)
+func (ch *Drawer) JsonRep(chunks *OrgChunks) map[string]any {
+	rep := ch.Block.JsonRep(chunks)
 	if len(ch.Properties) > 0 {
 		rep["properties"] = ch.Properties
 	}
 	return rep
 }
 
-func (ch *TableBlock) jsonRep(chunks *OrgChunks) map[string]any {
-	rep := ch.BasicChunk.jsonRep(chunks)
+func (ch *TableBlock) JsonRep(chunks *OrgChunks) map[string]any {
+	rep := ch.BasicChunk.JsonRep(chunks)
 	addProp("cells", ch.Cells, rep)
 	addProp("values", ch.Value, rep)
 	addIntProp("nameStart", ch.NameStart, rep)
@@ -444,7 +445,7 @@ func (ref ChunkRef) MarshalJSON() ([]byte, error) {
 	if ref.Chunk == nil {
 		return []byte("null"), nil
 	}
-	return json.Marshal(ref.Chunk.jsonRep(ref.OrgChunks))
+	return json.Marshal(ref.Chunk.JsonRep(ref.OrgChunks))
 }
 
 func (blk ChunkRef) ref(id OrgId) ChunkRef {
@@ -1296,30 +1297,34 @@ func DisplayChunks(prefix string, chunks orgTree, verboseopt ...int) {
 		v = verboseopt[0]
 	}
 	if v > 0 {
-		offset := 0
-		total := 0
-		maxname := 0
-		maxchname := 0
-		chunks.Each(func(chunk Chunk) bool {
-			total += len(chunk.text())
-			namelen := len(chunk.AsOrgChunk().Id)
-			if maxname < namelen {
-				maxname = namelen
-			}
-			chnamelen := len(Name(chunk))
-			if maxchname < chnamelen {
-				maxchname = chnamelen
-			}
-			return true
-		})
-		wid := len(fmt.Sprint(total))*2 + 1
-		chunks.Each(func(chunk Chunk) bool {
-			org := chunk.AsOrgChunk()
-			verbose(1, "%s%*s %*s [%-*s]: <%s>", prefix, wid, fmt.Sprintf("%d-%d", offset, offset+len(org.Text)-1), maxname, org.Id, maxchname, Name(chunk), strings.ReplaceAll(chunk.text(), "\n", "\\n"))
-			offset += len(org.Text)
-			return true
-		})
+		DumpChunks(os.Stderr, prefix, chunks)
 	}
+}
+
+func DumpChunks(w io.Writer, prefix string, chunks orgTree) {
+	offset := 0
+	total := 0
+	maxname := 0
+	maxchname := 0
+	chunks.Each(func(chunk Chunk) bool {
+		total += len(chunk.text())
+		namelen := len(chunk.AsOrgChunk().Id)
+		if maxname < namelen {
+			maxname = namelen
+		}
+		chnamelen := len(Name(chunk))
+		if maxchname < chnamelen {
+			maxchname = chnamelen
+		}
+		return true
+	})
+	wid := len(fmt.Sprint(total))*2 + 1
+	chunks.Each(func(chunk Chunk) bool {
+		org := chunk.AsOrgChunk()
+		fmt.Fprintf(w, "%s%*s %*s [%-*s]: <%s>\n", prefix, wid, fmt.Sprintf("%d-%d", offset, offset+len(org.Text)-1), maxname, org.Id, maxchname, Name(chunk), strings.ReplaceAll(chunk.text(), "\n", "\\n"))
+		offset += len(org.Text)
+		return true
+	})
 }
 
 func trimUnchangedChunks(left, mid, right, new orgTree) (orgTree, orgTree, orgTree, orgTree) {
