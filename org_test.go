@@ -79,11 +79,11 @@ name:
 number:
 #+end_src
 #+NAME: fred
-#+begin_src yaml
+#+begin_src yaml :tags one two
 2
 #+end_src
 #+NAME: joe
-#+begin_src yaml
+#+begin_src yaml :tags two three
 3
 #+end_src`
 
@@ -241,4 +241,21 @@ func TestLocation(tt *testing.T) {
 		t.failNowIfNot(!r.IsEmpty(), "Could not find node %s", name)
 		t.testEqual(Name(r.Chunk), name, "node %#v is not named %s", r.Chunk, name)
 	}
+	var empty document.Set[string]
+	t.testDeepEqual(tags(chunks[0]), empty, "chunk 1 has wrong tags")
+	t.testDeepEqual(tags(chunks[1]), document.NewSet("one", "two"), "chunk 1 has wrong tags")
+	t.testDeepEqual(tags(chunks[2]), document.NewSet("two", "three"), "chunk 2 has wrong tags")
+	ones := chunkPile.GetChunksTagged("one")
+	t.testEqual(len(ones), 1, "Found bad tagged blocks")
+	twos := chunkPile.GetChunksTagged("two")
+	t.testEqual(len(twos), 2, "Found bad tagged blocks")
+	threes := chunkPile.GetChunksTagged("three")
+	t.testEqual(len(threes), 1, "Found bad tagged blocks")
+}
+
+func tags(ch Chunk) document.Set[string] {
+	if blk, ok := ch.(Tagged); ok {
+		return blk.Tags()
+	}
+	return nil
 }

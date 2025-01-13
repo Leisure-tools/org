@@ -14,6 +14,7 @@ import (
 	// this parses into blocks and tracks character offsets
 
 	"github.com/BurntSushi/toml"
+	"github.com/leisure-tools/document"
 	doc "github.com/leisure-tools/document"
 	ft "github.com/leisure-tools/lazyfingertree"
 	diff "github.com/sergi/go-diff/diffmatchpatch"
@@ -102,6 +103,7 @@ type OrgMeasure struct {
 	Count int
 	Width int
 	Names doc.Set[string]
+	Tags  doc.Set[string]
 	Ids   doc.Set[OrgId]
 }
 
@@ -123,10 +125,15 @@ func (m orgMeasurer) Measure(blk Chunk) OrgMeasure {
 	if name != "" {
 		names.Add(name)
 	}
+	var tags document.Set[string]
+	if block, ok := blk.(Tagged); ok {
+		tags = block.Tags()
+	}
 	return OrgMeasure{
 		Count: 1,
 		Width: len(blk.AsOrgChunk().Text),
 		Names: names,
+		Tags:  tags,
 		Ids:   doc.NewSet(blk.AsOrgChunk().Id),
 	}
 }
@@ -136,6 +143,7 @@ func (m orgMeasurer) Sum(a OrgMeasure, b OrgMeasure) OrgMeasure {
 		Count: a.Count + b.Count,
 		Width: a.Width + b.Width,
 		Names: a.Names.Union(b.Names),
+		Tags:  a.Tags.Union(b.Tags),
 		Ids:   a.Ids.Union(b.Ids),
 	}
 }
@@ -192,6 +200,11 @@ type Block struct {
 
 type Named interface {
 	Name() string
+}
+
+type Tagged interface {
+	Tags() document.Set[string]
+	GetOptions() []string
 }
 
 type DataBlock interface {
@@ -300,6 +313,28 @@ func (ch *Headline) JsonRep(chunks *OrgChunks) map[string]any {
 	rep := ch.BasicChunk.JsonRep(chunks)
 	rep["level"] = ch.Level
 	return rep
+}
+
+func (ch *Block) GetOptions() []string {
+	return ch.Options
+}
+
+func (ch *Block) Tags() document.Set[string] {
+	var tags document.Set[string]
+
+	for i, tok := range ch.Options {
+		if tok != ":tags" {
+			continue
+		}
+		tags = document.NewSet[string]()
+		for _, tag := range ch.Options[i+1:] {
+			if len(tag) > 0 && tag[0] == ':' {
+				break
+			}
+			tags.Add(tag)
+		}
+	}
+	return tags
 }
 
 func (ch *Block) LabelText() string {
@@ -578,6 +613,42 @@ func (chunks *OrgChunks) GetChunkAt(offset int) ChunkRef {
 
 func (chunks *OrgChunks) GetChunkNamed(name string) ChunkRef {
 	_, result := chunks.LocateChunkNamed(name)
+	return result
+}
+
+func (chunks *OrgChunks) GetChunksNamed(name string) []ChunkRef {
+	result := make([]ChunkRef, 0, 4)
+	verbose(1, "chunks: %v", chunks)
+	tree := chunks.Chunks
+	for !tree.IsEmpty() {
+		_, right := tree.Split(func(m OrgMeasure) bool {
+			return m.Names.Has(name)
+		})
+		if !right.IsEmpty() {
+			result = append(result, ChunkRef{right.PeekFirst(), chunks})
+		}
+		tree = right.RemoveFirst()
+	}
+	return result
+}
+
+func (chunks *OrgChunks) GetChunksTagged(name string) []ChunkRef {
+	var result []ChunkRef
+	verbose(1, "chunks: %v", chunks)
+	tree := chunks.Chunks
+	for !tree.IsEmpty() {
+		_, right := tree.Split(func(m OrgMeasure) bool {
+			return m.Tags.Has(name)
+		})
+		if right.IsEmpty() {
+			break
+		}
+		if result == nil {
+			result = make([]ChunkRef, 0, 4)
+		}
+		result = append(result, ChunkRef{right.PeekFirst(), chunks})
+		tree = right.RemoveFirst()
+	}
 	return result
 }
 
