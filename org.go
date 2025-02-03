@@ -590,6 +590,17 @@ func (chunks *OrgChunks) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
+func (chunks *OrgChunks) LocateChunk(id OrgId) (int, ChunkRef) {
+	verbose(1, "chunks: %v", chunks)
+	left, right := chunks.Chunks.Split(func(m OrgMeasure) bool {
+		return m.Ids.Has(id)
+	})
+	if !right.IsEmpty() {
+		return left.Measure().Width, ChunkRef{right.PeekFirst(), chunks}
+	}
+	return 0, ChunkRef{}
+}
+
 func (chunks *OrgChunks) LocateChunkNamed(name string) (int, ChunkRef) {
 	verbose(1, "chunks: %v", chunks)
 	left, right := chunks.Chunks.Split(func(m OrgMeasure) bool {

@@ -9,3 +9,7 @@ require (
 	github.com/sergi/go-diff v1.3.1
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/leisure-tools/document v0.0.16 => /home/deck/Vaults/local/work/leisure-tools/document
+
+replace github.com/leisure-tools/lazyfingertree v0.0.12 => /home/deck/Vaults/local/work/leisure-tools/lazyfingertree
