@@ -240,6 +240,17 @@ func TestLocation(tt *testing.T) {
 		}
 		t.failNowIfNot(!r.IsEmpty(), "Could not find node %s", name)
 		t.testEqual(Name(r.Chunk), name, "node %#v is not named %s", r.Chunk, name)
+		_, r = chunkPile.LocateChunk(r.AsOrgChunk().Id)
+		if r.IsEmpty() {
+			verbosity = 1
+			verbose(1, "\n\n\nERROR, COULD NOT FIND BLOCK BY ID %s\n", r.AsOrgChunk().Id)
+			DisplayChunks("", chunkPile.Chunks)
+			verbose(1, "\nTREE\n")
+			chunkPile.Chunks.Dump(os.Stderr, 2)
+			verbose(1, "\n")
+			verbosity = 0
+		}
+		t.failNowIfNot(!r.IsEmpty(), "Could not find node with id %s", r.AsOrgChunk().Id)
 	}
 	var empty document.Set[string]
 	t.testDeepEqual(tags(chunks[0]), empty, "chunk 1 has wrong tags")
