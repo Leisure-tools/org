@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"reflect"
 	"regexp"
@@ -14,9 +15,8 @@ import (
 	// this parses into blocks and tracks character offsets
 
 	"github.com/BurntSushi/toml"
-	"github.com/leisure-tools/document"
-	doc "github.com/leisure-tools/document"
 	ft "github.com/leisure-tools/lazyfingertree"
+	u "github.com/leisure-tools/utils"
 	diff "github.com/sergi/go-diff/diffmatchpatch"
 	"gopkg.in/yaml.v3"
 )
@@ -97,6 +97,7 @@ type OrgStorage interface {
 
 var headlineRE = re(`headline`, `(?m)^(\*+) +(\S.*)?$`)
 var keywordRE = re(`keyword`, `(?m)^#\+([^: \n]+): *(.*)$`)
+var kwpropertyRE = re(`keyword property`, `(?im)^#\+\s*property:\s*(\S*)\s+(\S*)\s*$`)
 var drawerRE = re(`drawer`, `(?m)^:([^: \n]+): *$`)
 var drawerEndRE = re(`drawer-end`, `(?im)^:end: *$`)
 var propertyRE = re(`property`, `(?m)^:([^: \n]+): *(.*)$`)
@@ -107,6 +108,7 @@ var htmlStartRE = re(`html-start`, `(?im)^#\+begin_html *(\S+)?(?: +(.*))?$`)
 var srcStartRE = re(`src-start`, `(?im)^#\+begin_src *(\S+)?(?: +(.*))?$`)
 var srcEndRE = re(`src-end`, `(?im)^#\+end_src *$`)
 var resultsRE = re(`results`, `(?im)^(#+results:(.*)|results:) *$`)
+var headerargsRE = re(`header-args`, `(?im)^header-args(?::([^\s+]*))(\+?)$`)
 
 // var tokenRE = re(`token`, `([^\s"']|\\.)+|"([^\s"]|\\.)*"|'([^\s']|\\.)*'`)
 var tokenRE = re(`token`, `'[^']*'|"[^"]*"|[^\s'"]+`)
@@ -120,16 +122,16 @@ type orgMeasurer bool
 type OrgMeasure struct {
 	Count int
 	Width int
-	Names doc.Set[string]
-	Tags  doc.Set[string]
-	Ids   doc.Set[OrgId]
+	Names u.Set[string]
+	Tags  u.Set[string]
+	Ids   u.Set[OrgId]
 }
 
 func (m OrgMeasure) String() string {
 	return fmt.Sprintf("Count: %d Width %d Names %s Ids %s", m.Count, m.Width, m.Names, m.Ids)
 }
 
-func measure(ch Chunk) OrgMeasure {
+func Measure(ch Chunk) OrgMeasure {
 	return orgMeasurer(true).Measure(ch)
 }
 
@@ -138,12 +140,12 @@ func (m orgMeasurer) Identity() OrgMeasure {
 }
 
 func (m orgMeasurer) Measure(blk Chunk) OrgMeasure {
-	names := doc.NewSet[string]()
+	names := u.NewSet[string]()
 	name := Name(blk)
 	if name != "" {
 		names.Add(name)
 	}
-	var tags document.Set[string]
+	var tags u.Set[string]
 	if block, ok := blk.(Tagged); ok {
 		tags = block.Tags()
 	}
@@ -152,7 +154,7 @@ func (m orgMeasurer) Measure(blk Chunk) OrgMeasure {
 		Width: len(blk.AsOrgChunk().Text),
 		Names: names,
 		Tags:  tags,
-		Ids:   doc.NewSet(blk.AsOrgChunk().Id),
+		Ids:   u.NewSet(blk.AsOrgChunk().Id),
 	}
 }
 
@@ -170,7 +172,7 @@ func (m orgMeasurer) Sum(a OrgMeasure, b OrgMeasure) OrgMeasure {
 
 type OrgId string
 
-type idSet = doc.Set[OrgId]
+type idSet = u.Set[OrgId]
 
 type Jsonable interface {
 	JsonRep(chunks *OrgChunks) map[string]any
@@ -221,7 +223,7 @@ type Named interface {
 }
 
 type Tagged interface {
-	Tags() document.Set[string]
+	Tags() u.Set[string]
 	GetOptions() []string
 }
 
@@ -279,7 +281,7 @@ type ChunkRef struct {
 	*OrgChunks
 }
 
-var illegalBlockContent = doc.NewSet(KeywordType, BlockType, SourceType)
+var illegalBlockContent = u.NewSet(KeywordType, BlockType, SourceType)
 
 func addProp(name string, value any, m map[string]any) {
 	if value != nil {
@@ -333,26 +335,190 @@ func (ch *Headline) JsonRep(chunks *OrgChunks) map[string]any {
 	return rep
 }
 
+func (ch *Headline) GetProperties(chunks *OrgChunks) map[string]string {
+	result := chunks.GetDocProperties()
+	copied := false
+	ancestors := make([]*Headline, 0, 4)
+	for ; ch != nil; ch = chunks.ParentHeadline(ch.Id) {
+		ancestors = append(ancestors, ch)
+	}
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		ch := ancestors[i]
+		for _, child := range chunks.Children[ch.Id] {
+			if d, ok := chunks.ChunkIds[child].(*Drawer); ok && strings.ToLower(d.LabelText()) == "properties" {
+				if result == nil {
+					result = d.Properties
+				} else {
+					if !copied {
+						new := make(map[string]string, len(result)+len(d.Properties))
+						merge(new, result)
+						result = new
+						copied = true
+					}
+					merge(result, d.Properties)
+				}
+			}
+		}
+	}
+	return result
+}
+
+func merge(dst, src map[string]string) {
+	for k, v := range src {
+		mergeProperty(dst, k, v)
+	}
+}
+
+func mergeProperty(props map[string]string, k, v string) {
+	if k == "" {
+		return
+	} else if k[len(k)-1] == '+' {
+		k = k[0 : len(k)-1]
+		if prev, present := props[k]; present {
+			props[k] = prev + " " + v
+		} else {
+			props[k] = v
+		}
+	}
+}
+
+func (ch *Keyword) LabelText() string {
+	return ch.Text[ch.Label:ch.LabelEnd]
+}
+
+func (ch *Keyword) ContentText() string {
+	return ch.Text[ch.Content:]
+}
+
+func (ch *Keyword) IsProperty() bool {
+	return strings.ToLower(ch.LabelText()) == "property"
+}
+
+func (ch *Keyword) Property() (string, string) {
+	match := kwpropertyRE.FindStringSubmatch(ch.Text)
+	if match == nil {
+		return "", ""
+	}
+	return match[1], match[2]
+}
+
+func (chunks *OrgChunks) GetDocProperties() map[string]string {
+	var result map[string]string
+	tree := chunks.Chunks
+	if tree.IsEmpty() {
+		return result
+	}
+	for cur := tree.PeekFirst().AsOrgChunk().Id; cur != ""; cur = chunks.Next[cur] {
+		if k, ok := chunks.ChunkIds[cur].(*Keyword); ok {
+			pk, pv := k.Property()
+			if pk == "" {
+				continue
+			} else if result == nil {
+				result = make(map[string]string)
+			}
+			mergeProperty(result, pk, pv)
+		}
+	}
+	return result
+}
+
+func (chunks *OrgChunks) ParentHeadline(id OrgId) *Headline {
+	for id = chunks.Parent[id]; id != ""; id = chunks.Parent[id] {
+		ch := chunks.ChunkIds[id]
+		if hl, isHeadline := ch.(*Headline); isHeadline {
+			return hl
+		}
+	}
+	return nil
+}
+
+func (ch *BasicChunk) GetProperties(chunks *OrgChunks) map[string]string {
+	if parent := chunks.ParentHeadline(ch.Id); parent != nil {
+		return parent.GetProperties(chunks)
+	}
+	return nil
+}
+
+func (ch *Block) GetFullOptions(chunks *OrgChunks) map[string]string {
+	return ch.GetInheritedOptions(chunks, strings.ToLower(ch.LabelText()), strings.TrimSpace(ch.OptionString()))
+}
+
+func (ch *BasicChunk) GetInheritedOptions(chunks *OrgChunks, label, optStr string) map[string]string {
+	props := ch.GetProperties(chunks)
+	add := props["header-args"]
+	if optStr != "" && add != "" {
+		optStr += " " + add
+	} else if optStr == "" && add != "" {
+		optStr = add
+	}
+	langVal := props["header-args:"+label]
+	if langVal != "" {
+		if optStr != "" {
+			optStr += " " + langVal
+		} else {
+			optStr = langVal
+		}
+	}
+	opts := TokenizeOptions(optStr)
+	curOpt := -1
+	var result map[string]string
+	addOpt := func(i int) {
+		if result == nil {
+			result = make(map[string]string)
+		}
+		val := strings.Join(opts[curOpt+1:i], " ")
+		key := opts[curOpt][1:]
+		if key != "" && key[len(key)-1] == '+' {
+			key = key[0 : len(key)-1]
+			if result[key] != "" {
+				result[key] += " " + val
+				return
+			}
+		}
+		result[key] = val
+	}
+	for i, tok := range opts {
+		if len(tok) == 0 || tok[0] != ':' {
+			continue
+		} else if curOpt > -1 {
+			addOpt(i)
+		}
+		curOpt = i
+	}
+	if curOpt > -1 {
+		addOpt(len(opts))
+	}
+	return result
+}
+
+func (ch *Block) OptionString() string {
+	return ch.Text[ch.LabelEnd : ch.Content-1]
+}
+
 func (ch *Block) GetOptions() []string {
 	return ch.Options
 }
 
-func (ch *Block) Tags() document.Set[string] {
-	var tags document.Set[string]
-
-	for i, tok := range ch.Options {
-		if tok != ":tags" {
-			continue
-		}
-		tags = document.NewSet[string]()
-		for _, tag := range ch.Options[i+1:] {
-			if len(tag) > 0 && tag[0] == ':' {
-				break
+func (ch *Block) GetOption(name string) []string {
+	name = ":" + strings.ToLower(name)
+	opts := ch.Options
+	for i, tok := range opts {
+		if strings.ToLower(tok) == name {
+			count := 0
+			for _, opt := range opts[i+1:] {
+				if len(opt) > 0 && opt[0] == ':' {
+					break
+				}
+				count++
 			}
-			tags.Add(tag)
+			return opts[i+1 : i+1+count]
 		}
 	}
-	return tags
+	return nil
+}
+
+func (ch *Block) Tags() u.Set[string] {
+	return u.NewSet(ch.GetOption(":tags")...)
 }
 
 func (ch *Block) LabelText() string {
@@ -385,6 +551,21 @@ func Name(ch any) string {
 		return n.Name()
 	}
 	return ""
+}
+
+func IsSource(ch Chunk) bool {
+	_, ok := ch.(*SourceBlock)
+	return ok
+}
+
+func IsData(ch Chunk) bool {
+	s, ok := ch.(*SourceBlock)
+	return ok && s.IsData()
+}
+
+func IsTable(ch Chunk) bool {
+	_, ok := ch.(*TableBlock)
+	return ok
 }
 
 func (ch *SourceBlock) Name() string {
@@ -425,6 +606,7 @@ func (ch *SourceBlock) SetValue(value any) (str string, err error) {
 		}
 		sb.WriteString(ch.Text[ch.End:])
 		str = sb.String()
+		ch.Value = value
 	}
 	return
 }
@@ -583,6 +765,14 @@ func eatLine(doc string) (string, string) {
 	return line, rest
 }
 
+func (chunks *OrgChunks) Iter() iter.Seq[Chunk] {
+	return chunks.Chunks.Iter()
+}
+
+func (chunks *OrgChunks) IterReverse() iter.Seq[Chunk] {
+	return chunks.Chunks.IterReverse()
+}
+
 func (chunks *OrgChunks) indexOf(ch Chunk) int {
 	left, right := chunks.Chunks.Split(func(m OrgMeasure) bool {
 		return !m.Ids.Has(ch.AsOrgChunk().Id)
@@ -614,13 +804,21 @@ func (chunks *OrgChunks) MarshalJSON() ([]byte, error) {
 
 func (chunks *OrgChunks) LocateChunk(id OrgId) (int, ChunkRef) {
 	verbose(1, "chunks: %v", chunks)
-	left, right := chunks.Chunks.Split(func(m OrgMeasure) bool {
+	left, chunk := GetChunk(id, chunks.Chunks)
+	if !left.IsEmpty() {
+		return left.Measure().Width, ChunkRef{chunk, chunks}
+	}
+	return 0, ChunkRef{}
+}
+
+func GetChunk(id OrgId, tree orgTree) (orgTree, Chunk) {
+	left, right := tree.Split(func(m OrgMeasure) bool {
 		return m.Ids.Has(id)
 	})
 	if !right.IsEmpty() {
-		return left.Measure().Width, ChunkRef{right.PeekFirst(), chunks}
+		return left, right.PeekFirst()
 	}
-	return 0, ChunkRef{}
+	return right, nil
 }
 
 func (chunks *OrgChunks) LocateChunkNamed(name string) (int, ChunkRef) {
@@ -643,7 +841,7 @@ func (chunks *OrgChunks) GetChunksIn(offset, length int) []ChunkRef {
 		refs = make([]ChunkRef, 0, 8)
 		for !right.IsEmpty() && length > 0 {
 			refs = append(refs, ChunkRef{right.PeekFirst(), chunks})
-			length -= measure(right.PeekFirst()).Width
+			length -= Measure(right.PeekFirst()).Width
 			right = right.RemoveFirst()
 		}
 	}
@@ -821,17 +1019,11 @@ func (chunks *OrgChunks) addBlock(tp OrgType, label, labelEnd int, line, rest st
 			if tp == BlockType && htmlStartRE.MatchString(line) {
 				tp = HtmlType
 			}
-			options := ([]string)(nil)
 			if labelEnd < len(firstLine) && labelEnd >= 0 {
 				verbose(1, "GETTING OPTIONS FOR %s", firstLine[labelEnd:])
-				options = tokenRE.FindAllString(firstLine[labelEnd:], -1)
-				for i, opt := range options {
-					if (opt[0] == '"' || opt[0] == '\'') && opt[0] == opt[len(opt)-1] {
-						options[i] = opt[1 : len(opt)-1]
-					}
-				}
-				verbose(1, "OPTIONS: %s", strings.Join(options, ", "))
 			}
+			options := TokenizeOptions(firstLine[labelEnd:])
+			verbose(1, "OPTIONS: %s", strings.Join(options, ", "))
 			chunks.add(&Block{
 				BasicChunk: *chunks.newBasicChunk(tp, sb.String()),
 				Content:    content,
@@ -847,6 +1039,16 @@ func (chunks *OrgChunks) addBlock(tp OrgType, label, labelEnd int, line, rest st
 		pos += len(line)
 	}
 	return oldRest
+}
+
+func TokenizeOptions(optStr string) []string {
+	options := tokenRE.FindAllString(optStr, -1)
+	for i, opt := range options {
+		if (opt[0] == '"' || opt[0] == '\'') && opt[0] == opt[len(opt)-1] {
+			options[i] = opt[1 : len(opt)-1]
+		}
+	}
+	return options
 }
 
 func (typ OrgType) isSourcePrecursor() bool {
@@ -899,7 +1101,7 @@ func (chunks *OrgChunks) parseDrawer(m []int, line, rest string) string {
 		props := make(map[string]string, len(lines))
 		for _, line := range lines {
 			if m := propertyRE.FindStringSubmatch(line); len(m) > 0 {
-				props[m[1]] = m[2]
+				mergeProperty(props, strings.ToLower(m[1]), m[2])
 			}
 		}
 		if len(props) == 0 {
@@ -921,16 +1123,21 @@ func (chunks *OrgChunks) parseSource(m []int, line, rest string) string {
 		value := (any)(nil)
 		var err error
 		if content := strings.TrimSpace(blk.Text[blk.Content:blk.End]); content != "" {
+			isData := true
 			if language := strings.ToLower(blk.LabelText()); language == "json" {
 				err = json.Unmarshal([]byte(content), &value)
 			} else if language == "yaml" {
 				err = yaml.Unmarshal([]byte(content), &value)
 			} else if language == "toml" {
 				err = toml.Unmarshal([]byte(content), &value)
-
+			} else {
+				isData = false
 			}
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR PARSING ORG DATA\n  text: %s\n  error: %v", content, err)
 				value = nil
+			} else if isData && value == nil && len(content) > 1 {
+				verbose(1, "Warning, empty data for %s", escnl(content))
 			}
 		}
 		chunks.add(&SourceBlock{
@@ -1164,7 +1371,7 @@ type ChunkChanges struct {
 	Changed idSet
 	Added   idSet
 	Removed []OrgId
-	Linked  map[OrgId]doc.Set[string]
+	Linked  map[OrgId]u.Set[string]
 }
 
 func (ch *ChunkChanges) Order(chunks *OrgChunks) []OrgId {
@@ -1211,9 +1418,9 @@ func (ch *ChunkChanges) addLink(chunk OrgId, link string) {
 	if ch != nil {
 		if ch.Linked[chunk] == nil {
 			if ch.Linked == nil {
-				ch.Linked = make(map[OrgId]doc.Set[string], 4)
+				ch.Linked = make(map[OrgId]u.Set[string], 4)
 			}
-			ch.Linked[chunk] = doc.NewSet(link)
+			ch.Linked[chunk] = u.NewSet(link)
 		} else {
 			ch.Linked[chunk].Add(link)
 		}
@@ -1225,13 +1432,13 @@ func (ch *ChunkChanges) Merge(more *ChunkChanges) {
 	ch.Added = ch.Added.Union(more.Added)
 	if len(more.Linked) > 0 {
 		if len(ch.Linked) == 0 {
-			ch.Linked = map[OrgId]doc.Set[string]{}
+			ch.Linked = map[OrgId]u.Set[string]{}
 		}
 		for link := range more.Linked {
 			ch.Linked[link] = ch.Linked[link].Union(more.Linked[link])
 		}
 	}
-	s := doc.NewSet(ch.Removed...).Union(doc.NewSet(more.Removed...))
+	s := u.NewSet(ch.Removed...).Union(u.NewSet(more.Removed...))
 	ch.Removed = s.ToSlice()
 }
 
@@ -1270,7 +1477,7 @@ func (chunks *OrgChunks) Replace(offset, len int, text string) *ChunkChanges {
 			left = left.AddLast(newChunks.PeekFirst())
 			newChunks = newChunks.RemoveFirst()
 		}
-		changes.Linked = make(map[OrgId]doc.Set[string], newChunks.Measure().Count+2)
+		changes.Linked = make(map[OrgId]u.Set[string], newChunks.Measure().Count+2)
 		prev := left.PeekLast().AsOrgChunk()
 		newChunks.Each(func(chunk Chunk) bool {
 			org := chunk.AsOrgChunk()
@@ -1400,7 +1607,7 @@ func (chunks *OrgChunks) initialReplacement(offset, length int, text string) (or
 		last := left.PeekLast()
 		left = left.RemoveLast()
 		mid = mid.AddFirst(last)
-		offset += measure(last).Width
+		offset += Measure(last).Width
 	}
 	// catenate mid, replace, and parse
 	txt := getText(mid)

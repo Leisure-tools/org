@@ -1,6 +1,6 @@
 module github.com/leisure-tools/org
 
-go 1.20
+go 1.24
 
 require (
 	github.com/BurntSushi/toml v1.2.1
@@ -10,6 +10,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace github.com/leisure-tools/document v0.0.16 => /home/deck/Vaults/local/work/leisure-tools/document
-
-replace github.com/leisure-tools/lazyfingertree v0.0.12 => /home/deck/Vaults/local/work/leisure-tools/lazyfingertree
+require gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect

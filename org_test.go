@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/leisure-tools/document"
 	"github.com/leisure-tools/lazyfingertree"
+	u "github.com/leisure-tools/utils"
 )
 
 var blocks = []string{
@@ -206,15 +206,15 @@ func TestReplacement(tt *testing.T) {
 
 func TestLocation(tt *testing.T) {
 	t := myT{tt}
-	t.testDeepEqual(document.NewSet("fred", "joe"), document.NewSet("fred").Union(document.NewSet("joe")), "Bad set union")
+	t.testDeepEqual(u.NewSet("fred", "joe"), u.NewSet("fred").Union(u.NewSet("joe")), "Bad set union")
 	chunkPile := Parse(LOC_DOC)
 	chunks := chunkPile.Chunks.ToSlice()
 	testName := func(meas OrgMeasure, name ...string) {
-		names := document.NewSet(name...)
+		names := u.NewSet(name...)
 		t.testDeepEqual(names, meas.Names, "Error, %s does not match measurement %s", names, meas)
 	}
 	testChunkName := func(ch Chunk, name string) {
-		names := document.NewSet(name)
+		names := u.NewSet(name)
 		meas := orgMeasurer(true).Measure(ch)
 		t.testDeepEqual(names, meas.Names, "Error, %s does not measure with name %s", lazyfingertree.Brief(ch), name)
 	}
@@ -252,10 +252,10 @@ func TestLocation(tt *testing.T) {
 		}
 		t.failNowIfNot(!r.IsEmpty(), "Could not find node with id %s", r.AsOrgChunk().Id)
 	}
-	var empty document.Set[string]
+	var empty u.Set[string]
 	t.testDeepEqual(tags(chunks[0]), empty, "chunk 1 has wrong tags")
-	t.testDeepEqual(tags(chunks[1]), document.NewSet("one", "two"), "chunk 1 has wrong tags")
-	t.testDeepEqual(tags(chunks[2]), document.NewSet("two", "three"), "chunk 2 has wrong tags")
+	t.testDeepEqual(tags(chunks[1]), u.NewSet("one", "two"), "chunk 1 has wrong tags")
+	t.testDeepEqual(tags(chunks[2]), u.NewSet("two", "three"), "chunk 2 has wrong tags")
 	ones := chunkPile.GetChunksTagged("one")
 	t.testEqual(len(ones), 1, "Found bad tagged blocks")
 	twos := chunkPile.GetChunksTagged("two")
@@ -264,7 +264,7 @@ func TestLocation(tt *testing.T) {
 	t.testEqual(len(threes), 1, "Found bad tagged blocks")
 }
 
-func tags(ch Chunk) document.Set[string] {
+func tags(ch Chunk) u.Set[string] {
 	if blk, ok := ch.(Tagged); ok {
 		return blk.Tags()
 	}
