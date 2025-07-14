@@ -803,7 +803,6 @@ func (chunks *OrgChunks) MarshalJSON() ([]byte, error) {
 }
 
 func (chunks *OrgChunks) LocateChunk(id OrgId) (int, ChunkRef) {
-	verbose(1, "chunks: %v", chunks)
 	left, chunk := GetChunk(id, chunks.Chunks)
 	if !left.IsEmpty() {
 		return left.Measure().Width, ChunkRef{chunk, chunks}
@@ -822,7 +821,6 @@ func GetChunk(id OrgId, tree orgTree) (orgTree, Chunk) {
 }
 
 func (chunks *OrgChunks) LocateChunkNamed(name string) (int, ChunkRef) {
-	verbose(1, "chunks: %v", chunks)
 	left, right := chunks.Chunks.Split(func(m OrgMeasure) bool {
 		return m.Names.Has(name)
 	})
@@ -865,7 +863,6 @@ func (chunks *OrgChunks) GetChunkNamed(name string) ChunkRef {
 
 func (chunks *OrgChunks) GetChunksNamed(name string) []ChunkRef {
 	result := make([]ChunkRef, 0, 4)
-	verbose(1, "chunks: %v", chunks)
 	tree := chunks.Chunks
 	for !tree.IsEmpty() {
 		_, right := tree.Split(func(m OrgMeasure) bool {
@@ -881,7 +878,6 @@ func (chunks *OrgChunks) GetChunksNamed(name string) []ChunkRef {
 
 func (chunks *OrgChunks) GetChunksTagged(name string) []ChunkRef {
 	var result []ChunkRef
-	verbose(1, "chunks: %v", chunks)
 	tree := chunks.Chunks
 	for !tree.IsEmpty() {
 		_, right := tree.Split(func(m OrgMeasure) bool {
