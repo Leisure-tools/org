@@ -188,7 +188,7 @@ func TestReplacement(tt *testing.T) {
 	prefix := strings.Join(blocks[:4], "")
 	suffix := strings.Join(blocks[4:], "")
 	chunks2 := Parse(text2)
-	t.testEqual(chunks2.getText(), prefix+insert1+suffix, "parsed text differs")
+	t.testEqual(chunks2.GetText(), prefix+insert1+suffix, "parsed text differs")
 	chunks := Parse(doc1)
 	changes := chunks.Replace(len(prefix), 0, insert1)
 	t.testEqual(len(changes.Removed), 0, "removed blocks")
