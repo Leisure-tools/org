@@ -95,7 +95,7 @@ type OrgStorage interface {
 	RemoveBlock(name string)
 }
 
-var headlineRE = re(`headline`, `(?m)^(\*+) +(\S.*)?$`)
+var headlineRE = re(`headline`, `(?m)^(\*+)\s+(\S.*?\s+)?(:(?:[^\s:]*:)+)?\s*$`)
 var keywordRE = re(`keyword`, `(?m)^#\+([^: \n]+): *(.*)$`)
 var kwpropertyRE = re(`keyword property`, `(?im)^#\+\s*property:\s*(\S*)\s+(\S*)\s*$`)
 var drawerRE = re(`drawer`, `(?m)^:([^: \n]+): *$`)
@@ -203,7 +203,8 @@ type BasicChunk struct {
 
 type Headline struct {
 	BasicChunk
-	Level int
+	Level  int
+	HlTags []string
 }
 
 type Keyword struct {
@@ -228,7 +229,6 @@ type Named interface {
 
 type Tagged interface {
 	Tags() u.Set[string]
-	GetOptions() []string
 }
 
 type DataBlock interface {
@@ -338,6 +338,10 @@ func (ch *Headline) JsonRep(chunks *OrgChunks) map[string]any {
 	rep := ch.BasicChunk.JsonRep(chunks)
 	rep["level"] = ch.Level
 	return rep
+}
+
+func (ch *Headline) Tags() u.Set[string] {
+	return u.NewSet(ch.HlTags...)
 }
 
 func (ch *Headline) GetProperties(chunks *OrgChunks) map[string]string {
@@ -1087,9 +1091,14 @@ func (chunks *OrgChunks) lineType(line string) (OrgType, func(m []int, line, res
 }
 
 func (chunks *OrgChunks) parseHeadline(m []int, line, rest string) string {
+	var tagstr []string = nil
+	if m[7] > -1 {
+		tagstr = strings.Split(line[m[6]+1:m[7]-1], ":")
+	}
 	chunks.add(&Headline{
 		BasicChunk: *chunks.newBasicChunk(HeadlineType, line),
 		Level:      m[3] - m[2],
+		HlTags:     tagstr,
 	})
 	return rest
 }
