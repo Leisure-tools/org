@@ -231,6 +231,10 @@ type Tagged interface {
 	Tags() u.Set[string]
 }
 
+type Optionable interface {
+	GetOptions() []string
+}
+
 type DataBlock interface {
 	Chunk
 	Name() string
